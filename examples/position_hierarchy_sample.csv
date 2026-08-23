@@ -1,0 +1,6 @@
+employee_id,job_family,job_level,cost_centre,region,fte,contract_type
+E1001,Engineering,5,CC-100,APAC,1.0,permanent
+E1002,Engineering,2,CC-100,EMEA,0.6,permanent
+E1003,Finance,4,CC-220,AMER,1.0,contractor
+E1004,Support,1,CC-310,APAC,0.5,casual
+E1005,Engineering,7,CC-101,AMER,1.0,permanent

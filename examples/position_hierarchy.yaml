@@ -1,0 +1,71 @@
+ruleset_id: position_hierarchy
+version: 0.1.0
+description: Starter ruleset -- edit or replace with your own.
+rules:
+  - rule_id: senior_engineering
+    description: Senior engineering roles roll up to the engineering leadership node.
+    rule_order: 10
+    active_flag: true
+    stop_on_match: false
+    conditions:
+      logic: all
+      conditions:
+        - left:
+            field: job_family
+          operator: equals
+          right:
+            literal: Engineering
+        - left:
+            field: job_level
+          operator: greater_than_or_equal
+          right:
+            literal: 5
+    assignments:
+      - target_field: hierarchy_node
+        value:
+          literal: ENG.LEADERSHIP
+      - target_field: review_tier
+        value:
+          literal: tier_1
+  - rule_id: part_time_override
+    description: Part-time and casual staff are reviewed one tier lower, whatever else matched.
+    rule_order: 20
+    active_flag: true
+    stop_on_match: false
+    conditions:
+      logic: any
+      conditions:
+        - left:
+            field: fte
+          operator: less_than
+          right:
+            literal: 0.8
+        - left:
+            field: contract_type
+          operator: in_list
+          right:
+            literal:
+              - casual
+              - contractor
+    assignments:
+      - target_field: review_tier
+        value:
+          literal: tier_3
+  - rule_id: unclassified_fallback
+    description: Anything still unmatched lands in the review queue and stops here.
+    rule_order: 30
+    active_flag: true
+    stop_on_match: true
+    conditions:
+      logic: all
+      conditions:
+        - left:
+            field: job_family
+          operator: is_not_null
+    assignments:
+      - target_field: leaf_key
+        value:
+          function: leaf_key
+          args:
+            - field: cost_centre
+            - field: job_family
