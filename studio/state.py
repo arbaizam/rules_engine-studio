@@ -1,4 +1,5 @@
-"""Session state: one draft ruleset, one sample dataset, one selection.
+"""
+Session-state management for mutable authoring data.
 
 Streamlit reruns the whole script on every interaction, so the draft lives in
 ``st.session_state`` and every widget writes straight back into the dataclasses.
@@ -9,10 +10,12 @@ get a widget-key collision.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 import streamlit as st
+from rules_engine.registry import FunctionRegistry
 
 from . import custom_functions, sample_data
 from .schema import Ruleset, new_rule
@@ -22,7 +25,6 @@ SAMPLE = "sample_frame"
 SELECTED = "selected_rule_uid"
 ACTIONS = "pending_actions"
 PREFIX = "column_prefix"
-FULL_AUDIT = "full_audit"
 
 
 def init() -> None:
@@ -37,9 +39,6 @@ def init() -> None:
         st.session_state[ACTIONS] = []
     if PREFIX not in st.session_state:
         st.session_state[PREFIX] = "rules_engine"
-    if FULL_AUDIT not in st.session_state:
-        st.session_state[FULL_AUDIT] = False
-    custom_functions.load_engine_registry()
 
 
 # --------------------------------------------------------------------------
@@ -48,31 +47,39 @@ def init() -> None:
 
 
 def draft() -> Ruleset:
+    """Return the current mutable ruleset draft."""
     return st.session_state[DRAFT]
 
 
 def set_draft(ruleset: Ruleset) -> None:
+    """Replace the current draft and select its first rule."""
     st.session_state[DRAFT] = ruleset
     st.session_state[SELECTED] = ruleset.rules[0].uid if ruleset.rules else None
 
 
 def frame() -> pd.DataFrame:
+    """Return the current editable test-data frame."""
     return st.session_state[SAMPLE]
 
 
 def set_frame(df: pd.DataFrame) -> None:
+    """Replace the current test-data frame."""
     st.session_state[SAMPLE] = df
 
 
 def columns() -> list[str]:
+    """Return test-data field names as strings."""
     return [str(c) for c in frame().columns]
 
 
 def rows() -> list[dict[str, Any]]:
-    return frame().to_dict("records")
+    """Return test data as Python row mappings for production evaluation."""
+    normalized = frame().astype(object).where(pd.notna(frame()), None)
+    return normalized.to_dict("records")
 
 
 def selected_rule():
+    """Return the selected rule or the first available rule."""
     uid = st.session_state.get(SELECTED)
     for rule in draft().rules:
         if rule.uid == uid:
@@ -81,10 +88,12 @@ def selected_rule():
 
 
 def select_rule(uid: str | None) -> None:
+    """Select a rule by its transient widget identifier."""
     st.session_state[SELECTED] = uid
 
 
-def functions() -> dict[str, Callable[..., Any]]:
+def functions() -> FunctionRegistry:
+    """Return the authoritative function registry used by the studio."""
     return custom_functions.registry()
 
 
@@ -94,11 +103,12 @@ def functions() -> dict[str, Callable[..., Any]]:
 
 
 def queue(action: Callable[[], None]) -> None:
+    """Queue a structural mutation until the current render completes."""
     st.session_state[ACTIONS].append(action)
 
 
 def flush() -> bool:
-    """Apply queued edits. Returns True when the caller should rerun."""
+    """Apply queued edits and return whether the caller should rerun."""
     pending = st.session_state.get(ACTIONS) or []
     if not pending:
         return False
@@ -114,6 +124,7 @@ def flush() -> bool:
 
 
 def add_rule() -> None:
+    """Append and select a uniquely named rule after the current sequence."""
     ruleset = draft()
     next_order = (max((r.rule_order for r in ruleset.rules), default=0)) + 10
     default_col = columns()[0] if columns() else ""
@@ -124,6 +135,7 @@ def add_rule() -> None:
 
 
 def duplicate_rule(uid: str) -> None:
+    """Duplicate one rule with fresh metadata and widget identifiers."""
     ruleset = draft()
     for rule in list(ruleset.rules):
         if rule.uid != uid:
@@ -137,13 +149,14 @@ def duplicate_rule(uid: str) -> None:
 
 
 def delete_rule(uid: str) -> None:
+    """Delete one rule and select the first remaining rule."""
     ruleset = draft()
     ruleset.rules = [r for r in ruleset.rules if r.uid != uid]
     select_rule(ruleset.rules[0].uid if ruleset.rules else None)
 
 
 def move_rule(uid: str, offset: int) -> None:
-    """Swap rule_order with the neighbour in the given direction."""
+    """Swap ``rule_order`` with the neighbor in the requested direction."""
     ordered = draft().ordered_rules()
     index = next((i for i, r in enumerate(ordered) if r.uid == uid), None)
     if index is None:
@@ -156,6 +169,7 @@ def move_rule(uid: str, offset: int) -> None:
 
 
 def _unique_rule_id(ruleset: Ruleset, candidate: str) -> str:
+    """Return a ruleset-unique rule identifier based on a candidate value."""
     existing = {r.rule_id for r in ruleset.rules}
     if candidate not in existing:
         return candidate

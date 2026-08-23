@@ -1,4 +1,4 @@
-"""Sample data: the rows every preview and test runs against."""
+"""Editable and uploadable rows used by production-runtime tests."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ from ..schema import referenced_columns
 
 
 def render() -> None:
+    """Render CSV and structured-file import plus editable test rows."""
     st.subheader("Sample data")
     st.caption(
-        "A handful of representative rows is enough. Everything the studio evaluates — "
-        "single conditions, single rules, the whole ruleset — runs against these."
+        "Upload a CSV or another supported structured file, then edit rows in place. "
+        "Condition, rule, and ruleset tests all use this same dataset."
     )
 
     _coverage()
@@ -21,7 +22,7 @@ def render() -> None:
     edited = st.data_editor(
         state.frame(),
         num_rows="dynamic",
-        use_container_width=True,
+        width="stretch",
         key="sample_editor",
     )
     if isinstance(edited, pd.DataFrame):
@@ -41,7 +42,7 @@ def render() -> None:
         if upload is not None and st.button("Replace sample data", key="do_upload"):
             try:
                 frame = sample_data.read_uploaded(upload.name, upload.getvalue())
-            except Exception as exc:
+            except (ImportError, OSError, UnicodeError, ValueError) as exc:
                 st.error(f"Could not read {upload.name}: {exc}")
             else:
                 state.set_frame(frame)
@@ -59,7 +60,7 @@ def render() -> None:
         if pasted.strip() and st.button("Use pasted rows", key="do_paste"):
             try:
                 frame = sample_data.read_pasted_json(pasted)
-            except Exception as exc:
+            except (UnicodeError, ValueError) as exc:
                 st.error(f"Could not read that JSON: {exc}")
             else:
                 state.set_frame(frame)
@@ -77,6 +78,7 @@ def render() -> None:
 
 
 def _coverage() -> None:
+    """Report incoming fields referenced by the current ruleset draft."""
     needed = referenced_columns(state.draft())
     have = set(state.columns())
     missing = sorted(needed - have)

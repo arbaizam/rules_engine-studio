@@ -1,107 +1,100 @@
-"""Custom functions available to draft rules.
+"""
+Authoritative custom-function registry for Rules Engine Studio.
 
-The real engine resolves ``CustomFunctionOperand`` against its own registry. The
-studio keeps a parallel registry so authors can build and test rules that call
-those functions before deployment.
-
-Two ways to populate it:
-  1. Register a Python callable here (fine for pure, cheap functions).
-  2. Point the studio at the engine's registry -- see ``load_engine_registry``,
-     which is a no-op until ``rules_engine`` is importable.
-
-Studio functions must be pure and cheap: the preview evaluator calls them once
-per row per condition, and an author will run them hundreds of times while
-editing. Anything that hits a network or a warehouse belongs behind a stub here.
+The studio registers the same metadata contracts and Python implementations
+used by ``rules_engine``. Function selectors, argument editors, validation, and
+row evaluation therefore share one registry instead of maintaining parallel
+demo behavior.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any, Callable
+from collections.abc import Iterable
+from typing import Any
 
-_REGISTRY: dict[str, Callable[..., Any]] = {}
+from rules_engine.registry import CustomFunctionSpec, FunctionRegistry
+from rules_engine.standard_functions import STANDARD_FUNCTION_SPECS, register_standard_functions
 
-
-def register(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    def wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
-        _REGISTRY[name] = fn
-        return fn
-
-    return wrap
+_REGISTRY = register_standard_functions(FunctionRegistry())
+_SPECS: dict[str, CustomFunctionSpec] = {
+    specification.function_name: specification for specification in STANDARD_FUNCTION_SPECS
+}
 
 
-def registry() -> dict[str, Callable[..., Any]]:
-    return dict(_REGISTRY)
+def registry() -> FunctionRegistry:
+    """Return the registry used by validation and production row evaluation."""
+    return _REGISTRY
 
 
-def names() -> list[str]:
-    return sorted(_REGISTRY)
+def specs() -> tuple[CustomFunctionSpec, ...]:
+    """Return every active function contract in canonical name order."""
+    return tuple(_SPECS[name] for name in sorted(_SPECS) if _SPECS[name].active_flag)
 
 
-def call(name: str, args: list[Any]) -> Any:
-    if name not in _REGISTRY:
-        raise KeyError(f"Custom function '{name}' is not registered in the studio.")
-    return _REGISTRY[name](*args)
-
-
-def load_engine_registry() -> list[str]:
-    """Merge in the real engine's custom functions when it is installed.
-
-    Returns the names that were added. The attribute path below is a guess and
-    needs confirming against the engine's registration API.
+def spec(function_name: str) -> CustomFunctionSpec:
     """
-    try:  # pragma: no cover - depends on the environment
-        import rules_engine  # type: ignore
+    Return metadata for one registered function.
 
-        source = getattr(rules_engine, "custom_function_registry", None)
-        if callable(source):
-            source = source()
-        if isinstance(source, dict):
-            added = [k for k in source if k not in _REGISTRY]
-            _REGISTRY.update(source)
-            return added
-    except Exception:
-        pass
-    return []
+    Parameters
+    ----------
+    function_name : str
+        Canonical registered function name.
 
-
-# --------------------------------------------------------------------------
-# demo functions -- replace with the real ones
-# --------------------------------------------------------------------------
+    Returns
+    -------
+    CustomFunctionSpec
+        Registered metadata contract.
+    """
+    return _REGISTRY.get_spec(function_name)
 
 
-def _as_date(value: Any) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return datetime.fromisoformat(str(value)).date()
+def names(*, in_assignment: bool | None = None) -> list[str]:
+    """
+    Return active function names permitted in the requested authoring context.
+
+    Parameters
+    ----------
+    in_assignment : bool | None, default None
+        ``True`` filters for assignment use, ``False`` filters for condition
+        use, and ``None`` returns every active function.
+
+    Returns
+    -------
+    list[str]
+        Sorted canonical function names.
+    """
+    available: Iterable[CustomFunctionSpec] = specs()
+    if in_assignment is True:
+        available = (
+            specification
+            for specification in available
+            if specification.allowed_in_assignment_flag
+        )
+    elif in_assignment is False:
+        available = (
+            specification
+            for specification in available
+            if specification.allowed_in_condition_flag
+        )
+    return sorted(specification.function_name for specification in available)
 
 
-@register("upper")
-def _upper(value: Any) -> str:
-    return str(value).upper()
+def call(function_name: str, authored_args: dict[str, Any]) -> Any:
+    """
+    Execute one registered function using its declared named-argument contract.
 
+    Parameters
+    ----------
+    function_name : str
+        Canonical registered function name.
+    authored_args : dict[str, Any]
+        Authored named arguments. Optional defaults are bound by the spec.
 
-@register("coalesce")
-def _coalesce(*values: Any) -> Any:
-    for value in values:
-        if value is not None and value != "":
-            return value
-    return None
-
-
-@register("concat")
-def _concat(*values: Any) -> str:
-    return "".join("" if v is None else str(v) for v in values)
-
-
-@register("days_between")
-def _days_between(start: Any, end: Any) -> int:
-    return (_as_date(end) - _as_date(start)).days
-
-
-@register("leaf_key")
-def _leaf_key(*parts: Any) -> str:
-    """Demo stand-in for the position-hierarchy leaf key builder."""
-    return "/".join(str(p).strip().lower() for p in parts if p not in (None, ""))
+    Returns
+    -------
+    Any
+        Function result.
+    """
+    specification = _REGISTRY.get_spec(function_name)
+    implementation = _REGISTRY.get_implementation(function_name)
+    return implementation(**specification.bind_args(authored_args))

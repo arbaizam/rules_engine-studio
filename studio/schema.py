@@ -1,179 +1,329 @@
-"""Draft-side ruleset model for Rules Engine Studio.
+"""
+Mutable authoring models for Rules Engine Studio.
 
-This module is the studio's *editing* model. It is deliberately independent of
-``rules_engine`` so the app runs with nothing installed but pandas + PyYAML, and
-so an in-progress draft is allowed to be invalid while someone is still typing.
+The production ``rules_engine`` models are frozen compiled metadata. The
+studio mirrors that contract with mutable dataclasses so Streamlit widgets can
+edit an incomplete draft in place. Conversion to production models always
+passes through ``YamlRulesetCompiler``.
 
-SCHEMA PARITY -- READ THIS FIRST
---------------------------------
-The field names below were inferred from the 0.4.0 audit review (models.py line
-references for Rule / Condition / Assignment, the operand resolution path in
-runtime.py, and the serializer's content-hash exclusions). They have NOT been
-checked against the real ``rules_engine.models`` / ``rules_engine.enums``.
-
-Everything version-sensitive is confined to this file plus ``yaml_io.py``:
-  * OPERATORS          -- confirm against rules_engine.enums
-  * NULL_RESULTS       -- confirm against runtime._resolve_null_result
-  * *.to_dict/from_dict -- confirm against the real YAML loader / DeltaRowSerializer
-
-Once the real model is available, reconcile here and the UI follows.
+Design notes
+------------
+Only transient widget identifiers are studio-specific. Every persisted field,
+operator, operand kind, and YAML key comes from the authoritative engine
+contract.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Iterable
-
-# --------------------------------------------------------------------------
-# operators
-# --------------------------------------------------------------------------
+from decimal import Decimal
+from typing import Any
 
 
 @dataclass(frozen=True)
 class OperatorSpec:
+    """
+    Display metadata for one canonical comparison operator.
+
+    Parameters
+    ----------
+    name : str
+        Canonical ``ComparisonOperator`` value.
+    label : str
+        Compact label shown in the condition editor.
+    arity : int
+        Number of operands required by the operator.
+    hint : str
+        Optional authoring guidance.
+    """
+
     name: str
     label: str
-    arity: int  # 1 = left only (is_null), 2 = left + right
+    arity: int
     hint: str = ""
 
 
 OPERATORS: tuple[OperatorSpec, ...] = (
-    OperatorSpec("equals", "equals", 2),
-    OperatorSpec("not_equals", "does not equal", 2),
-    OperatorSpec("greater_than", "is greater than", 2),
-    OperatorSpec("greater_than_or_equal", "is at least", 2),
-    OperatorSpec("less_than", "is less than", 2),
-    OperatorSpec("less_than_or_equal", "is at most", 2),
-    OperatorSpec("in_list", "is one of", 2, "Right side should be a list literal."),
-    OperatorSpec("not_in_list", "is not one of", 2, "Right side should be a list literal."),
+    OperatorSpec("eq", "equals", 2),
+    OperatorSpec("ne", "does not equal", 2),
+    OperatorSpec("gt", "is greater than", 2),
+    OperatorSpec("ge", "is at least", 2),
+    OperatorSpec("lt", "is less than", 2),
+    OperatorSpec("le", "is at most", 2),
+    OperatorSpec("in", "is one of", 2, "Use a collection literal on the right."),
+    OperatorSpec("not_in", "is not one of", 2, "Use a collection literal on the right."),
+    OperatorSpec("between", "is between", 2, "Use exactly two literal values."),
+    OperatorSpec("not_between", "is not between", 2, "Use exactly two literal values."),
+    OperatorSpec("like", "matches SQL pattern", 2),
+    OperatorSpec("not_like", "does not match SQL pattern", 2),
     OperatorSpec("contains", "contains", 2),
+    OperatorSpec("not_contains", "does not contain", 2),
     OperatorSpec("starts_with", "starts with", 2),
     OperatorSpec("ends_with", "ends with", 2),
-    OperatorSpec("matches_regex", "matches regex", 2),
-    OperatorSpec("between", "is between", 2, "Right side should be a 2-item list literal."),
-    OperatorSpec("is_null", "is empty", 1),
-    OperatorSpec("is_not_null", "is not empty", 1),
+    OperatorSpec("is_null", "is null", 1),
+    OperatorSpec("is_not_null", "is not null", 1),
 )
 
-OPERATORS_BY_NAME: dict[str, OperatorSpec] = {op.name: op for op in OPERATORS}
-OPERATOR_NAMES: list[str] = [op.name for op in OPERATORS]
-
-# How a condition resolves when an operand is null. ``None`` means "engine default".
-NULL_RESULTS = ("false", "true", "null")
-
-LITERAL_TYPES = ("string", "number", "integer", "boolean", "date", "list", "null")
-
+OPERATORS_BY_NAME: dict[str, OperatorSpec] = {operator.name: operator for operator in OPERATORS}
+OPERATOR_NAMES: list[str] = [operator.name for operator in OPERATORS]
+UNARY_OPERATORS = frozenset({"is_null", "is_not_null"})
+TOLERANCE_OPERATORS = frozenset({"eq", "ne", "gt", "ge", "lt", "le"})
+LITERAL_TYPES = (
+    "string",
+    "integer",
+    "decimal",
+    "double",
+    "boolean",
+    "date",
+    "timestamp",
+    "timestamp_ntz",
+    "list",
+    "null",
+)
 LOGIC_MODES = ("all", "any")
+OPERAND_KINDS = ("field", "assigned", "literal", "custom_function")
 
 
 def _uid() -> str:
+    """Return a short identifier used only for stable Streamlit widget keys."""
     return uuid.uuid4().hex[:10]
 
 
-# --------------------------------------------------------------------------
-# operands
-# --------------------------------------------------------------------------
+def _copy_argument(value: Any) -> Any:
+    """Copy a function argument while preserving nested operand objects."""
+    if isinstance(value, Operand):
+        return value.copy()
+    if isinstance(value, Mapping):
+        return {str(key): _copy_argument(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_argument(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_argument(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_argument(item) for item in value}
+    return deepcopy(value)
+
+
+def _argument_to_payload(value: Any) -> Any:
+    """Convert one custom-function argument into canonical authoring data."""
+    if isinstance(value, Operand):
+        return value.to_dict()
+    if isinstance(value, Mapping):
+        return {str(key): _argument_to_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_argument_to_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_argument_to_payload(item) for item in value)
+    if isinstance(value, set):
+        return {_argument_to_payload(item) for item in value}
+    return value
+
+
+def _argument_from_payload(value: Any) -> Any:
+    """Restore nested operand-shaped custom-function argument data."""
+    if isinstance(value, Mapping):
+        operand_keys = {"field", "assigned", "literal", "custom_function"} & set(value)
+        if operand_keys:
+            return Operand.from_dict(value)
+        return {str(key): _argument_from_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_argument_from_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_argument_from_payload(item) for item in value)
+    if isinstance(value, set):
+        return {_argument_from_payload(item) for item in value}
+    return value
 
 
 @dataclass
 class Operand:
-    """A value source: a column, a literal, or a registered custom function."""
+    """
+    Mutable authoring representation of a canonical rules-engine operand.
 
-    kind: str = "literal"  # field | literal | function
+    Parameters
+    ----------
+    kind : str
+        One of ``field``, ``assigned``, ``literal``, or ``custom_function``.
+    field_name : str
+        Incoming field read by a field operand.
+    assigned_field : str
+        Target committed by an earlier matched rule.
+    value : Any
+        Literal value.
+    value_type : str | None
+        Optional literal type hint preserved by the compiler.
+    function : str
+        Registered custom-function name.
+    args : dict[str, Any]
+        Named custom-function arguments.
+    default_if_null : Operand | None
+        Non-null literal fallback applied by the runtime.
+    """
+
+    kind: str = "literal"
     field_name: str = ""
+    assigned_field: str = ""
     value: Any = None
-    value_type: str = "string"
+    value_type: str | None = "string"
     function: str = ""
-    args: list["Operand"] = field(default_factory=list)
+    args: dict[str, Any] = field(default_factory=dict)
+    default_if_null: Operand | None = None
     uid: str = field(default_factory=_uid)
 
-    # -- display ----------------------------------------------------------
     def describe(self) -> str:
+        """Return a compact author-facing operand description."""
         if self.kind == "field":
-            return self.field_name or "(no column)"
-        if self.kind == "function":
-            inner = ", ".join(a.describe() for a in self.args)
-            return f"{self.function or '(no function)'}({inner})"
+            return self.field_name or "(no field)"
+        if self.kind == "assigned":
+            return f"assigned:{self.assigned_field or '(no field)'}"
+        if self.kind == "custom_function":
+            arguments = ", ".join(
+                f"{name}={value.describe() if isinstance(value, Operand) else value!r}"
+                for name, value in self.args.items()
+            )
+            return f"{self.function or '(no function)'}({arguments})"
         if self.value is None:
             return "null"
         if isinstance(self.value, str):
             return f'"{self.value}"'
         return str(self.value)
 
-    # -- serialisation ----------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
+        """Return the canonical YAML authoring representation."""
         if self.kind == "field":
-            return {"field": self.field_name}
-        if self.kind == "function":
-            return {"function": self.function, "args": [a.to_dict() for a in self.args]}
-        out: dict[str, Any] = {"literal": self.value}
-        if self.value_type in ("date",):  # keep the intent round-trippable
-            out["type"] = self.value_type
-        return out
+            payload: dict[str, Any] = {"field": self.field_name}
+        elif self.kind == "assigned":
+            payload = {"assigned": self.assigned_field}
+        elif self.kind == "custom_function":
+            payload = {
+                "custom_function": {
+                    "name": self.function,
+                    "args": {
+                        str(name): _argument_to_payload(value)
+                        for name, value in self.args.items()
+                    },
+                }
+            }
+        else:
+            payload = {"literal": self.value}
+            if self.value_type and self.value_type not in {"list", "null"}:
+                payload["value_type"] = self.value_type
+        if self.default_if_null is not None:
+            fallback = self.default_if_null.to_dict()
+            if set(fallback) == {"literal"}:
+                payload["default_if_null"] = fallback["literal"]
+            else:
+                payload["default_if_null"] = fallback
+        return payload
 
     @classmethod
-    def from_dict(cls, data: Any) -> "Operand":
-        # Bare scalars are treated as literals so hand-written YAML stays terse.
-        if not isinstance(data, dict):
+    def from_dict(cls, data: Any) -> Operand:
+        """
+        Restore an operand from canonical YAML authoring data.
+
+        Parameters
+        ----------
+        data : Any
+            Canonical operand mapping or a shorthand literal.
+
+        Returns
+        -------
+        Operand
+            Mutable studio operand.
+        """
+        if not isinstance(data, Mapping):
             return cls(kind="literal", value=data, value_type=infer_literal_type(data))
-        if "field" in data:
-            return cls(kind="field", field_name=str(data["field"] or ""))
-        if "function" in data:
-            raw_args = data.get("args") or []
-            return cls(
-                kind="function",
-                function=str(data["function"] or ""),
-                args=[cls.from_dict(a) for a in raw_args],
+        default = data.get("default_if_null")
+        default_operand = None
+        if default is not None:
+            default_operand = (
+                cls.from_dict(default)
+                if isinstance(default, Mapping) and "literal" in default
+                else cls(kind="literal", value=default, value_type=infer_literal_type(default))
             )
-        value = data.get("literal", data.get("value"))
+        if "field" in data:
+            return cls(
+                kind="field",
+                field_name=str(data.get("field") or ""),
+                default_if_null=default_operand,
+            )
+        if "assigned" in data:
+            return cls(
+                kind="assigned",
+                assigned_field=str(data.get("assigned") or ""),
+                default_if_null=default_operand,
+            )
+        if "custom_function" in data:
+            function = data.get("custom_function")
+            if not isinstance(function, Mapping):
+                function = {}
+            arguments = function.get("args")
+            if not isinstance(arguments, Mapping):
+                arguments = {}
+            return cls(
+                kind="custom_function",
+                function=str(function.get("name") or ""),
+                args={
+                    str(name): _argument_from_payload(value)
+                    for name, value in arguments.items()
+                },
+                default_if_null=default_operand,
+            )
+        value = data.get("literal")
         return cls(
             kind="literal",
             value=value,
-            value_type=str(data.get("type") or infer_literal_type(value)),
+            value_type=str(data.get("value_type") or infer_literal_type(value)),
+            default_if_null=default_operand,
         )
 
-    def copy(self) -> "Operand":
+    def copy(self) -> Operand:
+        """Return an independent copy with fresh widget identifiers."""
         return Operand(
             kind=self.kind,
             field_name=self.field_name,
-            value=list(self.value) if isinstance(self.value, list) else self.value,
+            assigned_field=self.assigned_field,
+            value=_copy_argument(self.value),
             value_type=self.value_type,
             function=self.function,
-            args=[a.copy() for a in self.args],
+            args={str(name): _copy_argument(value) for name, value in self.args.items()},
+            default_if_null=self.default_if_null.copy() if self.default_if_null else None,
         )
 
 
 def infer_literal_type(value: Any) -> str:
+    """Infer a studio input type from a parsed literal value."""
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "boolean"
     if isinstance(value, int):
         return "integer"
-    if isinstance(value, float):
-        return "number"
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (float, Decimal)):
+        return "decimal"
+    if isinstance(value, (list, tuple, set)):
         return "list"
     return "string"
 
 
-# --------------------------------------------------------------------------
-# conditions
-# --------------------------------------------------------------------------
-
-
 @dataclass
 class Condition:
+    """Mutable authoring representation of one canonical condition."""
+
     left: Operand = field(default_factory=lambda: Operand(kind="field"))
-    operator: str = "equals"
+    operator: str = "eq"
     right: Operand | None = field(default_factory=Operand)
-    condition_id: str = ""
+    condition_id: str = field(default_factory=lambda: f"condition:{_uid()}")
+    tolerance_abs: Decimal = Decimal(0)
+    error_on_null: bool = False
     active_flag: bool = True
-    null_result: str | None = None
     uid: str = field(default_factory=_uid)
 
     def describe(self) -> str:
+        """Return a compact author-facing condition description."""
         spec = OPERATORS_BY_NAME.get(self.operator)
         label = spec.label if spec else self.operator
         if spec and spec.arity == 1:
@@ -182,86 +332,98 @@ class Condition:
         return f"{self.left.describe()} {label} {right}"
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        if self.condition_id:
-            out["condition_id"] = self.condition_id
-        out["left"] = self.left.to_dict()
-        out["operator"] = self.operator
-        spec = OPERATORS_BY_NAME.get(self.operator)
-        if (spec is None or spec.arity == 2) and self.right is not None:
-            out["right"] = self.right.to_dict()
-        if not self.active_flag:
-            out["active_flag"] = False
-        if self.null_result:
-            out["null_result"] = self.null_result
-        return out
+        """Return canonical condition authoring data."""
+        payload: dict[str, Any] = {
+            "condition_id": self.condition_id,
+            "left": self.left.to_dict(),
+            "operator": self.operator,
+        }
+        if self.operator not in UNARY_OPERATORS and self.right is not None:
+            payload["right"] = self.right.to_dict()
+        payload["tolerance_abs"] = format(Decimal(str(self.tolerance_abs)), "f")
+        if self.error_on_null:
+            payload["error_on_null"] = True
+        payload["active_flag"] = self.active_flag
+        return payload
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Condition":
+    def from_dict(cls, data: Mapping[str, Any]) -> Condition:
+        """Restore a condition from canonical authoring data."""
         right = data.get("right")
         return cls(
             left=Operand.from_dict(data.get("left")),
-            operator=str(data.get("operator") or "equals"),
+            operator=str(data.get("operator") or "eq"),
             right=Operand.from_dict(right) if right is not None else None,
-            condition_id=str(data.get("condition_id") or ""),
+            condition_id=str(data.get("condition_id") or f"condition:{_uid()}"),
+            tolerance_abs=Decimal(str(data.get("tolerance_abs", "0"))),
+            error_on_null=bool(data.get("error_on_null", False)),
             active_flag=bool(data.get("active_flag", True)),
-            null_result=data.get("null_result"),
         )
 
-    def copy(self) -> "Condition":
+    def copy(self) -> Condition:
+        """Return an independent copy with fresh widget identifiers."""
         return Condition(
             left=self.left.copy(),
             operator=self.operator,
             right=self.right.copy() if self.right else None,
-            condition_id=self.condition_id,
+            condition_id=f"condition:{_uid()}",
+            tolerance_abs=self.tolerance_abs,
+            error_on_null=self.error_on_null,
             active_flag=self.active_flag,
-            null_result=self.null_result,
         )
 
 
 @dataclass
 class ConditionGroup:
-    logic: str = "all"  # all | any
-    active_flag: bool = True
-    children: list[Any] = field(default_factory=list)  # Condition | ConditionGroup
+    """Mutable tree node for a canonical logical condition group."""
+
+    logical_operator: str = "all"
+    condition_group_id: str = field(default_factory=lambda: f"group:{_uid()}")
+    children: list[Condition | ConditionGroup] = field(default_factory=list)
     uid: str = field(default_factory=_uid)
 
     def is_empty(self) -> bool:
+        """Return whether the group has no conditions or nested groups."""
         return not self.children
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"logic": self.logic}
-        if not self.active_flag:
-            out["active_flag"] = False
-        out["conditions"] = [c.to_dict() for c in self.children]
-        return out
+        """Return canonical tree-shaped condition-group authoring data."""
+        return {
+            "condition_group_id": self.condition_group_id,
+            self.logical_operator: [child.to_dict() for child in self.children],
+        }
 
     @classmethod
-    def from_dict(cls, data: Any) -> "ConditionGroup":
-        if data is None:
+    def from_dict(cls, data: Any) -> ConditionGroup:
+        """Restore a condition group from canonical authoring data."""
+        if not isinstance(data, Mapping):
             return cls()
-        if isinstance(data, list):  # a bare list of conditions means "all"
-            data = {"logic": "all", "conditions": data}
-        children: list[Any] = []
-        for raw in data.get("conditions") or []:
-            if isinstance(raw, dict) and ("conditions" in raw or "logic" in raw):
-                children.append(cls.from_dict(raw))
-            else:
-                children.append(Condition.from_dict(raw))
+        logical_operator = "any" if "any" in data else "all"
+        items = data.get(logical_operator)
+        if not isinstance(items, list):
+            items = []
+        children: list[Condition | ConditionGroup] = []
+        for item in items:
+            if isinstance(item, Mapping) and ({"all", "any"} & set(item)):
+                children.append(cls.from_dict(item))
+            elif isinstance(item, Mapping):
+                children.append(Condition.from_dict(item))
         return cls(
-            logic=str(data.get("logic") or "all"),
-            active_flag=bool(data.get("active_flag", True)),
+            logical_operator=logical_operator,
+            condition_group_id=str(data.get("condition_group_id") or f"group:{_uid()}"),
             children=children,
         )
 
-    def copy(self) -> "ConditionGroup":
+    def copy(self) -> ConditionGroup:
+        """Return an independent recursive copy with fresh metadata IDs."""
         return ConditionGroup(
-            logic=self.logic,
-            active_flag=self.active_flag,
-            children=[c.copy() for c in self.children],
+            logical_operator=self.logical_operator,
+            condition_group_id=f"group:{_uid()}",
+            children=[child.copy() for child in self.children],
         )
 
     def walk_conditions(self) -> Iterable[Condition]:
+        """Yield every condition below this group in authoring order."""
         for child in self.children:
             if isinstance(child, ConditionGroup):
                 yield from child.walk_conditions()
@@ -269,36 +431,47 @@ class ConditionGroup:
                 yield child
 
 
-# --------------------------------------------------------------------------
-# assignments / rules / ruleset
-# --------------------------------------------------------------------------
-
-
 @dataclass
 class Assignment:
-    """No ``active_flag`` -- per the 0.4.0 audit, only Rule and Condition have one."""
+    """Mutable authoring representation of one canonical assignment."""
 
     target_field: str = ""
     value: Operand = field(default_factory=Operand)
+    assignment_id: str = field(default_factory=lambda: f"assignment:{_uid()}")
     uid: str = field(default_factory=_uid)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"target_field": self.target_field, "value": self.value.to_dict()}
+        """Return canonical assignment authoring data."""
+        return {
+            "assignment_id": self.assignment_id,
+            "target_field": self.target_field,
+            "value": self.value.to_dict(),
+        }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Assignment":
+    def from_dict(cls, data: Mapping[str, Any]) -> Assignment:
+        """Restore an assignment from canonical authoring data."""
         return cls(
             target_field=str(data.get("target_field") or ""),
             value=Operand.from_dict(data.get("value")),
+            assignment_id=str(data.get("assignment_id") or f"assignment:{_uid()}"),
         )
 
-    def copy(self) -> "Assignment":
-        return Assignment(target_field=self.target_field, value=self.value.copy())
+    def copy(self) -> Assignment:
+        """Return an independent copy with a fresh assignment identifier."""
+        return Assignment(
+            target_field=self.target_field,
+            value=self.value.copy(),
+            assignment_id=f"assignment:{_uid()}",
+        )
 
 
 @dataclass
 class Rule:
+    """Mutable authoring representation of one canonical rule."""
+
     rule_id: str = ""
+    rule_name: str = ""
     description: str = ""
     rule_order: int = 0
     active_flag: bool = True
@@ -308,125 +481,167 @@ class Rule:
     uid: str = field(default_factory=_uid)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        """Return canonical rule authoring data."""
+        payload: dict[str, Any] = {
             "rule_id": self.rule_id,
-            "description": self.description,
+            "rule_name": self.rule_name,
             "rule_order": self.rule_order,
             "active_flag": self.active_flag,
             "stop_on_match": self.stop_on_match,
-            "conditions": self.conditions.to_dict(),
-            "assignments": [a.to_dict() for a in self.assignments],
         }
+        if self.description:
+            payload["description"] = self.description
+        payload["when"] = self.conditions.to_dict()
+        payload["assign"] = [assignment.to_dict() for assignment in self.assignments]
+        return payload
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Rule":
+    def from_dict(cls, data: Mapping[str, Any]) -> Rule:
+        """Restore a rule from canonical authoring data."""
         return cls(
             rule_id=str(data.get("rule_id") or ""),
+            rule_name=str(data.get("rule_name") or ""),
             description=str(data.get("description") or ""),
             rule_order=int(data.get("rule_order") or 0),
             active_flag=bool(data.get("active_flag", True)),
             stop_on_match=bool(data.get("stop_on_match", False)),
-            conditions=ConditionGroup.from_dict(data.get("conditions")),
-            assignments=[Assignment.from_dict(a) for a in data.get("assignments") or []],
+            conditions=ConditionGroup.from_dict(data.get("when")),
+            assignments=[
+                Assignment.from_dict(assignment)
+                for assignment in data.get("assign", [])
+                if isinstance(assignment, Mapping)
+            ],
         )
 
-    def copy(self) -> "Rule":
+    def copy(self) -> Rule:
+        """Return an independent copy with fresh child metadata identifiers."""
         return Rule(
             rule_id=self.rule_id,
+            rule_name=self.rule_name,
             description=self.description,
             rule_order=self.rule_order,
             active_flag=self.active_flag,
             stop_on_match=self.stop_on_match,
             conditions=self.conditions.copy(),
-            assignments=[a.copy() for a in self.assignments],
+            assignments=[assignment.copy() for assignment in self.assignments],
         )
 
 
 @dataclass
 class Ruleset:
+    """Mutable authoring representation of one canonical ruleset."""
+
     ruleset_id: str = "untitled_ruleset"
+    ruleset_name: str = "Untitled ruleset"
     version: str = "0.1.0"
     description: str = ""
-    published_by: str = ""
-    published_at: str = ""
+    owner: str = ""
+    owner_department: str = ""
     rules: list[Rule] = field(default_factory=list)
 
     def ordered_rules(self) -> list[Rule]:
-        return sorted(self.rules, key=lambda r: (r.rule_order, r.rule_id))
+        """Return rules in deterministic production evaluation order."""
+        return sorted(self.rules, key=lambda rule: (rule.rule_order, rule.rule_id))
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
+        """Return the canonical ruleset authoring payload."""
+        payload: dict[str, Any] = {
             "ruleset_id": self.ruleset_id,
+            "ruleset_name": self.ruleset_name,
             "version": self.version,
         }
         if self.description:
-            out["description"] = self.description
-        # Lifecycle metadata is excluded from content_hash by the engine
-        # (serializer.py:51-54) but still round-trips through the file.
-        if self.published_by:
-            out["published_by"] = self.published_by
-        if self.published_at:
-            out["published_at"] = self.published_at
-        out["rules"] = [r.to_dict() for r in self.ordered_rules()]
-        return out
+            payload["description"] = self.description
+        if self.owner:
+            payload["owner"] = self.owner
+        if self.owner_department:
+            payload["owner_department"] = self.owner_department
+        payload["rules"] = [rule.to_dict() for rule in self.ordered_rules()]
+        return payload
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Ruleset":
-        if not isinstance(data, dict):
+    def from_dict(cls, data: Mapping[str, Any]) -> Ruleset:
+        """
+        Restore a studio ruleset from canonical authoring data.
+
+        Parameters
+        ----------
+        data : Mapping[str, Any]
+            Payload produced by ``YamlRulesetExporter``.
+
+        Returns
+        -------
+        Ruleset
+            Mutable studio ruleset.
+        """
+        if not isinstance(data, Mapping):
             raise ValueError("Ruleset file must contain a mapping at the top level.")
         return cls(
             ruleset_id=str(data.get("ruleset_id") or "untitled_ruleset"),
+            ruleset_name=str(data.get("ruleset_name") or "Untitled ruleset"),
             version=str(data.get("version") or "0.1.0"),
             description=str(data.get("description") or ""),
-            published_by=str(data.get("published_by") or ""),
-            published_at=str(data.get("published_at") or ""),
-            rules=[Rule.from_dict(r) for r in data.get("rules") or []],
+            owner=str(data.get("owner") or ""),
+            owner_department=str(data.get("owner_department") or ""),
+            rules=[
+                Rule.from_dict(rule)
+                for rule in data.get("rules", [])
+                if isinstance(rule, Mapping)
+            ],
         )
 
 
-# --------------------------------------------------------------------------
-# helpers used by the UI
-# --------------------------------------------------------------------------
-
-
 def new_condition(default_field: str = "") -> Condition:
+    """Return a new equality condition bound to an optional sample field."""
     return Condition(
         left=Operand(kind="field", field_name=default_field),
-        operator="equals",
+        operator="eq",
         right=Operand(kind="literal", value="", value_type="string"),
     )
 
 
 def new_rule(order: int, default_field: str = "") -> Rule:
+    """Return a new rule with one editable condition and no assignments."""
+    rule_id = f"rule_{order:03d}"
     return Rule(
-        rule_id=f"rule_{order:03d}",
+        rule_id=rule_id,
+        rule_name=rule_id.replace("_", " ").title(),
         rule_order=order,
         conditions=ConditionGroup(children=[new_condition(default_field)]),
-        assignments=[],
     )
 
 
 def referenced_columns(ruleset: Ruleset) -> set[str]:
-    """Every source column the ruleset reads, across conditions and assignments."""
+    """Return every incoming field referenced by conditions and assignments."""
     found: set[str] = set()
 
-    def visit(op: Operand) -> None:
-        if op.kind == "field" and op.field_name:
-            found.add(op.field_name)
-        for arg in op.args:
-            visit(arg)
+    def visit(value: Any) -> None:
+        if isinstance(value, Operand):
+            if value.kind == "field" and value.field_name:
+                found.add(value.field_name)
+            for argument in value.args.values():
+                visit(argument)
+            return
+        if isinstance(value, Mapping):
+            for item in value.values():
+                visit(item)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                visit(item)
 
     for rule in ruleset.rules:
-        for cond in rule.conditions.walk_conditions():
-            visit(cond.left)
-            if cond.right is not None:
-                visit(cond.right)
+        for condition in rule.conditions.walk_conditions():
+            visit(condition.left)
+            if condition.right is not None:
+                visit(condition.right)
         for assignment in rule.assignments:
             visit(assignment.value)
     return found
 
 
 def assigned_fields(ruleset: Ruleset) -> list[str]:
+    """Return assignment target fields in first-production order."""
     seen: list[str] = []
     for rule in ruleset.ordered_rules():
         for assignment in rule.assignments:

@@ -1,10 +1,11 @@
-"""YAML: the artefact this whole app exists to produce."""
+"""Canonical rules-engine YAML validation, export, and import view."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 import streamlit as st
+from rules_engine.exceptions import RulesEngineError
 
 from .. import state, yaml_io
 from ..schema import Ruleset
@@ -12,16 +13,20 @@ from .widgets import issue_list
 
 
 def render() -> None:
+    """Render production validation and canonical YAML interchange controls."""
     ruleset = state.draft()
-    issues = yaml_io.validate(ruleset, state.columns(), state.functions().keys())
+    issues = yaml_io.validate(ruleset, state.columns())
 
     st.subheader("Checks")
     issue_list(issues, "Checks")
 
     st.subheader("Ruleset file")
-    body = yaml_io.to_yaml(ruleset)
-    document = _with_header(body, ruleset)
-    st.code(document, language="yaml")
+    document = ""
+    if yaml_io.has_errors(issues):
+        st.warning("Canonical YAML is available after production validation passes.")
+    else:
+        document = _with_header(yaml_io.to_yaml(ruleset), ruleset)
+        st.code(document, language="yaml")
 
     cols = st.columns([2, 2, 3])
     cols[0].download_button(
@@ -42,6 +47,7 @@ def render() -> None:
 
 
 def _with_header(body: str, ruleset: Ruleset) -> str:
+    """Add non-semantic authoring comments to canonical YAML text."""
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return (
         f"# {ruleset.ruleset_id} {ruleset.version}\n"
@@ -51,6 +57,7 @@ def _with_header(body: str, ruleset: Ruleset) -> str:
 
 
 def _import() -> None:
+    """Render canonical YAML file and pasted-text import controls."""
     st.subheader("Open an existing ruleset")
     st.caption("Importing replaces the current draft. Download first if you want to keep it.")
 
@@ -68,7 +75,12 @@ def _import() -> None:
             "Paste YAML",
             key="ruleset_paste",
             height=160,
-            placeholder="ruleset_id: position_hierarchy\nversion: 0.1.0\nrules: []",
+            placeholder=(
+                "ruleset_id: position_hierarchy\n"
+                "ruleset_name: Position hierarchy\n"
+                "version: 0.1.0\n"
+                "rules: []"
+            ),
             label_visibility="collapsed",
         )
         if pasted.strip() and st.button("Replace draft with pasted YAML", key="do_ruleset_paste"):
@@ -76,9 +88,10 @@ def _import() -> None:
 
 
 def _load(text: str) -> None:
+    """Compile imported YAML and replace the current mutable draft."""
     try:
         ruleset = yaml_io.from_yaml(text)
-    except Exception as exc:
+    except (RulesEngineError, TypeError, UnicodeError, ValueError) as exc:
         st.error(f"Could not read that ruleset: {exc}")
         return
     state.set_draft(ruleset)
