@@ -1,59 +1,50 @@
 # Rules Engine Studio
 
-A Streamlit workbench for authoring, validating, and testing executable business rules.
+Streamlit authoring and test surface for the canonical
+[`rules_engine`](https://github.com/arbaizam/rules_engine) metadata contract.
 
-The studio combines structured condition editing, outcome configuration, decision traces, rule ordering, and portable JSON rulebooks in one compact workspace.
+The studio edits mutable drafts, but it does not maintain its own rule dialect.
+Every validation, YAML import/export, custom-function contract, and row test is
+delegated to the pinned production package.
 
-## What is included
+## Capabilities
 
-- Compact rule editor with effective-logic previews
-- Optional transaction, support, and commerce templates
-- Custom text, number, yes/no, and date fields
-- `ALL` / `ANY` condition groups and type-appropriate comparisons
-- Live tests with matching and non-matching sample records
-- Condition-by-condition decision explanations
-- Rule library with priorities, active/inactive status, copy, edit, and delete
-- Automatic local saves plus JSON import/export
-- A framework-independent evaluator with unit tests
+- Author ordered rules with nested `all` / `any` groups.
+- Configure all canonical operands: `field`, `assigned`, `literal`, and
+  `custom_function`.
+- Configure operand null defaults, condition tolerances, null errors, active
+  flags, assignment IDs, and stop-on-match behavior.
+- Select all 58 standard functions from the engine registry and author their
+  exact named argument contracts.
+- Upload CSV, TSV, JSON, or Parquet test data and edit it in the browser.
+- Evaluate one condition, rule, assignment, row, or the entire uploaded file
+  with `SparkRowEvaluator`, the production worker-side row implementation.
+- Import and export YAML through `YamlRulesetCompiler` and
+  `YamlRulesetExporter`.
+- Validate through `RulesetValidator` before export.
 
 ## Run locally
 
 ```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-streamlit run app.py
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\streamlit.exe run app.py
 ```
 
-Open the local URL Streamlit prints, normally `http://localhost:8501`.
+The default Streamlit theme is dark. Session data remains in the browser
+session; evaluated CSV and canonical YAML are explicit downloads.
 
-## Workflow
+## Architecture
 
-1. Define or load the field schema.
-2. Author conditions, match mode, priority, and outcome.
-3. Save the rule and run records through the test bench.
-4. Inspect the condition trace and adjust the rule.
-5. Export the rulebook JSON for integration or version control.
+| Path | Responsibility |
+|---|---|
+| `studio/schema.py` | Mutable mirror of the canonical authoring contract |
+| `studio/custom_functions.py` | Production registry and all standard functions |
+| `studio/engine.py` | Compiler and `SparkRowEvaluator` adapter |
+| `studio/yaml_io.py` | Production compiler, exporter, and validator adapter |
+| `studio/ui/` | Streamlit authoring and test views |
+| `studio/sample_data.py` | Valid starter ruleset and representative rows |
+| `tests/test_studio.py` | Contract, registry, YAML, CSV, and runtime tests |
 
-Saved rules are written to `data/rulebook.json`. This runtime file is intentionally ignored by Git; the examples remain available as a clean first-run experience.
-
-## Run tests
-
-The evaluator and storage tests use only the Python standard library:
-
-```powershell
-python -m unittest discover -v
-```
-
-## Project layout
-
-```text
-app.py                     Streamlit interface
-rules_engine/models.py     Serializable rule model
-rules_engine/engine.py     Evaluation and human-readable traces
-rules_engine/examples.py   Starter scenarios and sample records
-rules_engine/storage.py    Local JSON persistence and import/export
-tests/                     Evaluator and storage regression tests
-```
-
-The JSON file is intentionally straightforward so another service can consume it without depending on Streamlit. Rules run in ascending priority order, and inactive rules are skipped when evaluating a full rulebook.
+The exact `rules_engine` commit used by local and Streamlit Cloud installs is
+pinned in `requirements.txt`.
