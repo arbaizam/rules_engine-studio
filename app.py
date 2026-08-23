@@ -1,4 +1,4 @@
-"""Rules Engine Studio — guided, human-readable business rule authoring."""
+"""Rules Engine Studio — professional business rule authoring and testing."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from rules_engine.storage import (
 
 APP_DIR = Path(__file__).resolve().parent
 RULEBOOK_PATH = APP_DIR / "data" / "rulebook.json"
-NAV_OPTIONS = ["✏️ Build", "🧪 Test", "📚 Library"]
+NAV_OPTIONS = ["Editor", "Test bench", "Rules"]
 OUTCOME_KINDS = [
     "Decision",
     "Route to queue",
@@ -65,39 +65,32 @@ def inject_styles() -> None:
         [data-testid="stHeader"] { background: transparent; }
         [data-testid="stSidebar"] { border-right: 1px solid var(--line); }
         [data-testid="stSidebar"] > div:first-child { background: #fff; }
-        .block-container { max-width: 1180px; padding-top: 2rem; padding-bottom: 5rem; }
+        .block-container { max-width: 1280px; padding-top: 1.15rem; padding-bottom: 3rem; }
         h1, h2, h3 { color: var(--ink); letter-spacing: -0.025em; }
-        h1 { font-size: 2.15rem !important; }
+        h1 { font-size: 1.65rem !important; }
         h2 { margin-top: 0 !important; }
         p, label { color: var(--ink); }
         .eyebrow {
             color: var(--brand); font-size: .76rem; font-weight: 800;
             letter-spacing: .1em; text-transform: uppercase; margin-bottom: .35rem;
         }
-        .hero-copy { color: var(--muted); font-size: 1.03rem; max-width: 740px; margin-top: -.5rem; }
+        .workspace-title { margin: 0; font-size: 1.55rem; font-weight: 800; letter-spacing: -.035em; }
+        .workspace-meta { color: var(--muted); font-size: .78rem; margin-top: .2rem; }
+        .section-kicker { color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+        .editor-toolbar { margin: .15rem 0 .8rem; }
         .brand-mark {
             display: inline-grid; place-items: center; width: 34px; height: 34px;
             border-radius: 10px; color: white; background: linear-gradient(135deg, #765ff2, #4c3bb4);
             font-weight: 900; margin-right: 9px; box-shadow: 0 7px 20px rgba(102,85,217,.22);
         }
         .sidebar-brand { font-size: 1.08rem; font-weight: 800; color: var(--ink); margin: .1rem 0 1.4rem; }
-        .step-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; margin: 1.25rem 0 1.8rem; }
-        .step {
-            background: #fff; border: 1px solid var(--line); border-radius: 11px;
-            padding: .65rem .75rem; color: var(--muted); font-size: .8rem; font-weight: 650;
-        }
-        .step b {
-            display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
-            color: var(--brand); background: var(--brand-soft); margin-right: .35rem;
-        }
         .logic-preview {
-            background: linear-gradient(135deg, #302a58, #211d3e); color: #fff;
-            border-radius: 15px; padding: 1.1rem 1.25rem; margin: .75rem 0 1rem;
-            box-shadow: 0 12px 35px rgba(41,34,78,.12);
+            background: #f5f3ff; color: var(--ink); border: 1px solid #ddd7ff;
+            border-radius: 10px; padding: .78rem .9rem; margin: .65rem 0 .8rem;
         }
-        .logic-preview .logic-label { color: #bdb4fa; font-size: .72rem; font-weight: 800; letter-spacing: .1em; }
-        .logic-preview .logic-main { color: #fff; font-size: 1.02rem; font-weight: 650; margin: .28rem 0; line-height: 1.55; }
-        .logic-preview .logic-outcome { color: #dcd7ff; font-size: .91rem; }
+        .logic-preview .logic-label { color: #6655d9; font-size: .68rem; font-weight: 800; letter-spacing: .09em; }
+        .logic-preview .logic-main { color: var(--ink); font-size: .9rem; font-weight: 650; margin: .2rem 0; line-height: 1.4; }
+        .logic-preview .logic-outcome { color: #514a72; font-size: .84rem; }
         .mini-tag {
             display: inline-block; color: #5145a8; background: #f0edff; border-radius: 100px;
             padding: .23rem .58rem; margin: .1rem .2rem .1rem 0; font-size: .72rem; font-weight: 700;
@@ -130,9 +123,8 @@ def inject_styles() -> None:
             background: #fff; border: 1px solid var(--line); border-radius: 9px;
             padding: .34rem .75rem; margin-right: .25rem;
         }
-        .footer-note { text-align: center; color: #9197a8; font-size: .75rem; margin-top: 3rem; }
+        .footer-note { text-align: center; color: #9197a8; font-size: .72rem; margin-top: 2rem; }
         @media (max-width: 760px) {
-            .step-row { grid-template-columns: repeat(2, 1fr); }
             .block-container { padding-top: 1.2rem; }
         }
         </style>
@@ -286,7 +278,7 @@ def render_logic_preview(rule: Rule) -> None:
     st.markdown(
         f"""
         <div class="logic-preview">
-          <div class="logic-label">RULE IN PLAIN ENGLISH</div>
+          <div class="logic-label">EFFECTIVE LOGIC</div>
           <div class="logic-main">When {conditions}</div>
           <div class="logic-outcome">Then <b>{result}</b></div>
         </div>
@@ -296,11 +288,11 @@ def render_logic_preview(rule: Rule) -> None:
 
 
 def render_header() -> None:
-    st.markdown('<div class="eyebrow">Rules Engine Studio</div>', unsafe_allow_html=True)
-    st.title("Turn policy into clear, testable decisions")
+    active_count = sum(rule.enabled for rule in st.session_state.rules)
     st.markdown(
-        '<p class="hero-copy">Build rules the way you explain them to a colleague: '
-        "describe when they apply, choose what happens, and try a real example before publishing.</p>",
+        '<div class="workspace-title">Rules Engine Studio</div>'
+        f'<div class="workspace-meta">{html.escape(st.session_state.workspace_name)} · '
+        f'{active_count}/{len(st.session_state.rules)} active rules</div>',
         unsafe_allow_html=True,
     )
     st.radio(
@@ -329,7 +321,7 @@ def render_sidebar() -> None:
         col_a.metric("Rules", len(st.session_state.rules))
         col_b.metric("Active", enabled_count)
 
-        st.markdown("#### Move your rulebook")
+        st.markdown("#### Import / export")
         export_content = serialize_rulebook(
             st.session_state.rules,
             st.session_state.workspace_name,
@@ -364,37 +356,26 @@ def render_sidebar() -> None:
                     st.error(f"That file is not a valid rulebook: {exc}")
 
         st.divider()
-        st.markdown("#### A good rule is…")
-        st.caption("✓ Specific enough for two people to interpret the same way")
-        st.caption("✓ Tested with both a matching and non-matching example")
-        st.caption("✓ Focused on one clear outcome")
-        st.caption(f"Local saves: `{RULEBOOK_PATH.relative_to(APP_DIR)}`")
+        st.caption("JSON is the portable rulebook source of truth.")
+        st.caption(f"Runtime store: `{RULEBOOK_PATH.relative_to(APP_DIR)}`")
 
 
 def render_template_picker() -> None:
-    st.markdown("### 1. Start with a familiar scenario")
-    st.caption("A starter gives you realistic fields and examples. Everything remains editable.")
-    columns = st.columns(len(TEMPLATES))
-    for column, (name, template) in zip(columns, TEMPLATES.items()):
-        with column:
-            with st.container(border=True):
-                st.markdown(f"#### {template['icon']} {name}")
-                st.caption(template["description"])
-                if st.button(
-                    "Use this starter",
-                    key=f"template_{name}",
-                    use_container_width=True,
-                    type="primary" if st.session_state.selected_template == name else "secondary",
-                ):
-                    use_template(name)
-                    st.rerun()
+    with st.popover("Template", use_container_width=True):
+        template_name = st.selectbox(
+            "Template",
+            list(TEMPLATES),
+            index=list(TEMPLATES).index(st.session_state.selected_template),
+            label_visibility="collapsed",
+        )
+        st.caption(TEMPLATES[template_name]["description"])
+        if st.button("Load template", type="primary", use_container_width=True):
+            use_template(template_name)
+            st.rerun()
 
 
 def render_field_manager(rule: Rule, revision: int) -> None:
-    with st.expander("Your available data fields", expanded=False):
-        st.caption(
-            "Conditions choose from these fields. Add the names your team already uses in forms, spreadsheets, or APIs."
-        )
+    with st.expander(f"Field schema · {len(rule.fields)} fields", expanded=False):
         st.markdown(
             "".join(
                 f'<span class="mini-tag">{html.escape(field.label)} · {field.data_type}</span>'
@@ -402,7 +383,7 @@ def render_field_manager(rule: Rule, revision: int) -> None:
             ),
             unsafe_allow_html=True,
         )
-        st.markdown("**Add another field**")
+        st.markdown("**Add field**")
         field_col, type_col, button_col = st.columns([2.1, 1.1, 1])
         new_label = field_col.text_input(
             "Field name",
@@ -494,18 +475,14 @@ def render_value_input(
 
 
 def render_condition_builder(rule: Rule, revision: int) -> None:
-    st.markdown("### 2. Describe when it applies")
-    match_col, help_col = st.columns([1.35, 2.65])
+    heading_col, match_col = st.columns([2, 1])
+    heading_col.markdown("### Conditions")
     rule.match = match_col.selectbox(
-        "A record must match",
+        "Match mode",
         ["all", "any"],
         index=0 if rule.match == "all" else 1,
         format_func=lambda value: "ALL conditions" if value == "all" else "ANY condition",
         key=f"match_{revision}",
-    )
-    help_col.info(
-        "ALL is the safest default: every line below must be true. Use ANY when just one line should trigger the outcome.",
-        icon="💡",
     )
 
     if not rule.fields:
@@ -517,8 +494,8 @@ def render_condition_builder(rule: Rule, revision: int) -> None:
         if condition.field not in field_keys:
             condition.field = field_keys[0]
         with st.container(border=True):
-            st.caption(f"CONDITION {index}")
-            field_col, operator_col, value_col, remove_col = st.columns([1.35, 1.35, 1.35, .38])
+            index_col, field_col, operator_col, value_col, remove_col = st.columns([.18, 1.7, 1.2, 1.1, .3])
+            index_col.markdown(f"**{index}**")
             condition.field = field_col.selectbox(
                 "Field",
                 field_keys,
@@ -556,48 +533,50 @@ def render_condition_builder(rule: Rule, revision: int) -> None:
 
 
 def render_outcome_builder(rule: Rule, revision: int) -> None:
-    st.markdown("### 3. Choose what happens")
-    kind_col, value_col = st.columns([1.1, 1.9])
+    st.markdown("### Outcome")
     current_kind = rule.outcome.kind if rule.outcome.kind in OUTCOME_KINDS else OUTCOME_KINDS[0]
-    rule.outcome.kind = kind_col.selectbox(
-        "Type of outcome",
+    rule.outcome.kind = st.selectbox(
+        "Type",
         OUTCOME_KINDS,
         index=OUTCOME_KINDS.index(current_kind),
         key=f"outcome_kind_{revision}",
     )
-    rule.outcome.value = value_col.text_input(
-        "Outcome",
+    rule.outcome.value = st.text_input(
+        "Value",
         value=rule.outcome.value,
         placeholder="e.g. Manual review, Priority support, 15% off",
         key=f"outcome_value_{revision}",
     )
     rule.outcome.message = st.text_area(
-        "Instructions for the person or system carrying this out (optional)",
+        "Message / payload",
         value=rule.outcome.message,
-        placeholder="What should happen next? Include enough context for the recipient.",
+        placeholder="Optional output context",
         key=f"outcome_message_{revision}",
         height=82,
     )
 
 
 def render_build_page() -> None:
-    st.markdown(
-        '<div class="step-row"><div class="step"><b>1</b> Pick a scenario</div>'
-        '<div class="step"><b>2</b> Define when</div><div class="step"><b>3</b> Choose result</div>'
-        '<div class="step"><b>4</b> Test examples</div></div>',
-        unsafe_allow_html=True,
-    )
-    render_template_picker()
-    st.divider()
-
     rule: Rule = st.session_state.draft_rule
     revision: int = st.session_state.draft_revision
-    st.markdown("### Name the policy, not the implementation")
-    name_col, priority_col = st.columns([3, 1])
+
+    title_col, new_col, template_col, save_col, test_col = st.columns([3, .75, .9, .8, .8])
+    with title_col:
+        st.markdown("## Rule editor")
+        st.caption(f"Rule ID · {rule.id[:12]}")
+    if new_col.button("New", use_container_width=True):
+        set_draft(blank_rule(rule.fields))
+        st.rerun()
+    with template_col:
+        render_template_picker()
+    save_requested = save_col.button("Save", type="primary", use_container_width=True)
+    test_requested = test_col.button("Test", use_container_width=True)
+
+    name_col, priority_col, enabled_col = st.columns([3, .7, .7])
     rule.name = name_col.text_input(
         "Rule name",
         value=rule.name,
-        placeholder="e.g. Review high-risk, large transactions",
+        placeholder="Rule name",
         key=f"rule_name_{revision}",
     )
     rule.priority = int(
@@ -606,59 +585,49 @@ def render_build_page() -> None:
             min_value=1,
             max_value=9999,
             value=int(rule.priority),
-            help="Lower numbers run first when evaluating a complete rulebook.",
+            help="Lower values evaluate first.",
             key=f"priority_{revision}",
         )
     )
+    with enabled_col:
+        st.write("")
+        st.write("")
+        rule.enabled = st.toggle(
+            "Active",
+            value=rule.enabled,
+            key=f"enabled_{revision}",
+        )
     rule.description = st.text_input(
-        "Why does this rule exist?",
+        "Description",
         value=rule.description,
-        placeholder="One sentence that helps a reviewer understand its purpose",
+        placeholder="Optional operational context",
         key=f"rule_description_{revision}",
-    )
-    rule.enabled = st.toggle(
-        "Rule is active",
-        value=rule.enabled,
-        help="Inactive rules stay in the library but do not run as part of the rulebook.",
-        key=f"enabled_{revision}",
     )
 
     render_field_manager(rule, revision)
-    st.divider()
-    render_condition_builder(rule, revision)
-    st.divider()
-    render_outcome_builder(rule, revision)
-    st.divider()
 
-    st.markdown("### 4. Review before saving")
-    render_logic_preview(rule)
+    conditions_col, outcome_col = st.columns([1.75, 1], gap="large")
+    with conditions_col:
+        render_condition_builder(rule, revision)
+    with outcome_col:
+        render_outcome_builder(rule, revision)
+        render_logic_preview(rule)
+
     errors = validate_rule(rule)
     if errors:
-        with st.container(border=True):
-            st.markdown("**Finish these details:**")
+        with outcome_col.container(border=True):
+            st.markdown("**Validation**")
             for error in errors:
                 st.markdown(f"- {error}")
-    save_col, test_col, status_col = st.columns([1.1, 1.1, 2])
-    if save_col.button(
-        "Save to library",
-        type="primary",
-        use_container_width=True,
-        disabled=bool(errors),
-    ):
+
+    if save_requested:
         save_current_rule()
         st.rerun()
-    if test_col.button(
-        "Save & test",
-        use_container_width=True,
-        disabled=bool(errors),
-    ):
+    if test_requested:
         if save_current_rule():
             st.session_state.test_rule_id = rule.id
             st.session_state.go_to_test = True
         st.rerun()
-    status_col.caption(
-        "Saving updates the local rulebook file. Download JSON from the sidebar when you want to share or back it up."
-    )
 
 
 def matching_template(rule: Rule) -> dict | None:
@@ -709,11 +678,10 @@ def render_test_input(rule: Rule, field: FieldDefinition) -> object:
 
 
 def render_test_page() -> None:
-    st.markdown("## Try a real example")
-    st.caption("Change a value and the result updates immediately. Each condition explains what it received.")
+    st.markdown("## Test bench")
     rules: list[Rule] = st.session_state.rules
     if not rules:
-        st.markdown('<div class="empty-state">Save a rule before testing it.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="empty-state">No saved rules available.</div>', unsafe_allow_html=True)
         return
 
     rule_ids = [rule.id for rule in rules]
@@ -732,16 +700,15 @@ def render_test_page() -> None:
 
     template = matching_template(rule)
     if template:
-        st.caption("Start with an example, then change any value.")
-        match_col, miss_col, _ = st.columns([1, 1, 2])
+        match_col, miss_col, _ = st.columns([.9, .9, 2.2])
         match_col.button(
-            "Load matching example",
+            "Load match fixture",
             on_click=load_test_sample,
             args=(rule, template["matching_sample"]),
             use_container_width=True,
         )
         miss_col.button(
-            "Load non-matching example",
+            "Load miss fixture",
             on_click=load_test_sample,
             args=(rule, template["non_matching_sample"]),
             use_container_width=True,
@@ -749,11 +716,11 @@ def render_test_page() -> None:
 
     input_col, result_col = st.columns([1.1, 1], gap="large")
     with input_col:
-        st.markdown("### Example record")
+        st.markdown("### Input")
         record: dict[str, object] = {}
         for field in rule.fields:
             record[field.key] = render_test_input(rule, field)
-        with st.expander("See this record as JSON"):
+        with st.expander("JSON payload"):
             st.json(record)
 
     with result_col:
@@ -766,8 +733,8 @@ def render_test_page() -> None:
         else:
             st.info("Rule did not match. No outcome was applied.", icon="ℹ️")
         if not rule.enabled:
-            st.warning("This rule is inactive. It can be tested here, but the full rulebook would skip it.")
-        st.markdown("**Why?**")
+            st.warning("Inactive rule: excluded from rulebook evaluation.")
+        st.markdown("**Condition trace**")
         for condition_result in result.condition_results:
             css_class = "trace-pass" if condition_result.matched else "trace-fail"
             symbol = "✓" if condition_result.matched else "×"
@@ -776,7 +743,7 @@ def render_test_page() -> None:
                 unsafe_allow_html=True,
             )
         match_word = "every" if rule.match == "all" else "at least one"
-        st.caption(f"This rule requires {match_word} condition to pass.")
+        st.caption(f"Match mode: {match_word} condition must pass.")
 
 
 def duplicate_rule(rule: Rule) -> None:
@@ -801,8 +768,7 @@ def delete_rule(rule_id: str) -> None:
 def render_library_page() -> None:
     title_col, button_col = st.columns([3, 1])
     with title_col:
-        st.markdown("## Rule library")
-        st.caption("Review what is active, adjust priorities, or duplicate a rule as a starting point.")
+        st.markdown("## Rules")
     with button_col:
         st.write("")
         if st.button("＋ New rule", type="primary", use_container_width=True):
@@ -814,7 +780,7 @@ def render_library_page() -> None:
     rules: list[Rule] = sorted(st.session_state.rules, key=lambda item: item.priority)
     if not rules:
         st.markdown(
-            '<div class="empty-state"><b>Your library is empty.</b><br>Start a new rule or import a rulebook.</div>',
+            '<div class="empty-state">No rules in this rulebook.</div>',
             unsafe_allow_html=True,
         )
         return
@@ -879,7 +845,7 @@ def main() -> None:
         render_library_page()
 
     st.markdown(
-        '<div class="footer-note">Rules Engine Studio · Human-readable decisions with testable outcomes</div>',
+        '<div class="footer-note">Rules Engine Studio</div>',
         unsafe_allow_html=True,
     )
 

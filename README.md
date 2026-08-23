@@ -1,13 +1,13 @@
 # Rules Engine Studio
 
-A guided Streamlit app for turning business policy into rules that non-developers can read, test, and share.
+A Streamlit workbench for authoring, validating, and testing executable business rules.
 
-The app deliberately keeps technical expressions out of the main workflow. Authors pick familiar data fields, build a **When → Then** sentence, and try realistic records while the studio explains why each condition passed or failed.
+The studio combines structured condition editing, outcome configuration, decision traces, rule ordering, and portable JSON rulebooks in one compact workspace.
 
 ## What is included
 
-- Guided rule authoring with plain-language previews
-- Transaction review, support priority, and order discount starters
+- Compact rule editor with effective-logic previews
+- Optional transaction, support, and commerce templates
 - Custom text, number, yes/no, and date fields
 - `ALL` / `ANY` condition groups and type-appropriate comparisons
 - Live tests with matching and non-matching sample records
@@ -27,14 +27,13 @@ streamlit run app.py
 
 Open the local URL Streamlit prints, normally `http://localhost:8501`.
 
-## Typical workflow
+## Workflow
 
-1. Choose the starter closest to the decision you are automating.
-2. Rename the rule and explain why it exists.
-3. Define the fields and conditions in the same language your team uses.
-4. Choose one concrete outcome and add handoff instructions.
-5. Save and test with both a matching and non-matching example.
-6. Download the rulebook JSON to share it or put it under version control.
+1. Define or load the field schema.
+2. Author conditions, match mode, priority, and outcome.
+3. Save the rule and run records through the test bench.
+4. Inspect the condition trace and adjust the rule.
+5. Export the rulebook JSON for integration or version control.
 
 Saved rules are written to `data/rulebook.json`. This runtime file is intentionally ignored by Git; the examples remain available as a clean first-run experience.
 
