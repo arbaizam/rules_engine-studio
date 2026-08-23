@@ -1,0 +1,13 @@
+# Normalise line endings so a Windows checkout never produces whole-file diffs.
+# (The main repo's missing *.qmd rule is what made README.qmd churn 1362 lines.)
+* text=auto eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.qmd  text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.csv  text eol=lf
+*.png  binary
+*.parquet binary

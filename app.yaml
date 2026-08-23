@@ -1,0 +1,11 @@
+# Databricks Apps entrypoint. Not wired up yet -- kept here so deployment is a
+# config step rather than a rewrite. See README "Running on Databricks".
+command:
+  - streamlit
+  - run
+  - app.py
+env:
+  - name: STREAMLIT_SERVER_HEADLESS
+    value: "true"
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"
