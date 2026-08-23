@@ -1,0 +1,9 @@
+[project]
+name = "rules-engine-studio"
+version = "0.1.0"
+description = "A guided Streamlit studio for authoring and testing business rules"
+requires-python = ">=3.10"
+dependencies = ["streamlit>=1.40,<2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
