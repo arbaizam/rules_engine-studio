@@ -28,8 +28,8 @@ def inject_styles() -> None:
         :root {
             --studio-panel: #121824;
             --studio-panel-raised: #182131;
-            --studio-input: #243044;
-            --studio-input-border: #8797B0;
+            --studio-input: #3A4B66;
+            --studio-input-border: #B7C4D8;
             --studio-border: #61718B;
             --studio-rule: #38BDF8;
             --studio-group: #A78BFA;
@@ -53,8 +53,8 @@ def inject_styles() -> None:
         [data-testid="stFileUploader"] section,
         [data-testid="stDataEditor"] {
             background: var(--studio-input) !important;
-            border: 1px solid var(--studio-input-border) !important;
-            box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.08);
+            border: 2px solid var(--studio-input-border) !important;
+            box-shadow: inset 0 0 0 1px rgba(248, 250, 252, 0.12);
         }
 
         [data-testid="stTextInput"] input,
@@ -62,6 +62,13 @@ def inject_styles() -> None:
         [data-testid="stTextArea"] textarea,
         [data-testid="stSelectbox"] [data-baseweb="select"] > div {
             color: #F8FAFC !important;
+        }
+
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stNumberInput"] input::placeholder,
+        [data-testid="stTextArea"] textarea::placeholder {
+            color: #D4DDEA !important;
+            opacity: 0.9;
         }
 
         [data-testid="stTextInput"] [data-baseweb="input"]:hover,
@@ -86,6 +93,8 @@ def inject_styles() -> None:
 
         [class*="st-key-rule_node_"] {
             border-left: 4px solid var(--studio-rule);
+            box-sizing: border-box;
+            padding-left: 1.5rem;
         }
 
         [class*="st-key-group_depth_"] {
@@ -115,8 +124,8 @@ def inject_styles() -> None:
         }
 
         [class*="st-key-group_depth_0_"] {
-            margin-left: 1.5rem;
-            width: calc(100% - 1.5rem);
+            margin-left: 0;
+            width: 100%;
         }
 
         .studio-node-label {
