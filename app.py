@@ -32,9 +32,9 @@ def inject_styles() -> None:
             --studio-input-border: #B7C4D8;
             --studio-border: #61718B;
             --studio-rule: #38BDF8;
-            --studio-rule-input: #F1F5F9;
-            --studio-rule-input-border: #FFFFFF;
-            --studio-rule-input-text: #0F172A;
+            --studio-rule-input: #263449;
+            --studio-rule-input-border: #94A3B8;
+            --studio-rule-input-text: #F8FAFC;
             --studio-group: #A78BFA;
             --studio-condition: #F59E0B;
             --studio-assignment: #34D399;
@@ -102,10 +102,14 @@ def inject_styles() -> None:
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"],
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"],
-        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea {
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea,
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+        [class*="st-key-rule_node_"] [data-testid="stDateInput"] [data-baseweb="input"],
+        [class*="st-key-rule_node_"] [data-testid="stTimeInput"] [data-baseweb="input"] {
             background-color: var(--studio-rule-input) !important;
-            border: 2px solid var(--studio-rule-input-border) !important;
-            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4) !important;
+            border: 1px solid var(--studio-rule-input-border) !important;
+            box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.15) !important;
         }
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="base-input"],
@@ -120,37 +124,41 @@ def inject_styles() -> None:
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] input,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input {
-            outline: 2px solid var(--studio-rule-input-border) !important;
-            outline-offset: -2px;
+            outline: 1px solid var(--studio-rule-input-border) !important;
+            outline-offset: -1px;
         }
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] input::placeholder,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input::placeholder,
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea::placeholder {
-            color: #475569 !important;
-            -webkit-text-fill-color: #475569 !important;
+            color: #AEBBCD !important;
+            -webkit-text-fill-color: #AEBBCD !important;
         }
 
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] button {
-            background-color: #CBD5E1 !important;
+            background-color: #33445C !important;
             color: var(--studio-rule-input-text) !important;
-            border-left: 1px solid #94A3B8 !important;
+            border-left: 1px solid #718198 !important;
         }
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:hover,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:hover,
-        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:hover {
-            border-color: #FFFFFF !important;
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:hover,
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div:hover {
+            border-color: #C4CFDD !important;
         }
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:focus,
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] input:focus,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input:focus {
-            border-color: #F5F3FF !important;
+            border-color: #B8A7FF !important;
             outline-color: #A78BFA !important;
-            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.75) !important;
+            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.5) !important;
         }
 
         [class*="st-key-group_depth_"] {
