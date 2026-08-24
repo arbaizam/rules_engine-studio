@@ -16,11 +16,12 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     """The rendered app exposes every function and both data/YAML uploaders."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
+    sorter = next(expander for expander in app.expander if expander.label == "Drag to reorder")
+    assert sorter.proto.expanded is True
     assert any(
-        caption.value == "Drag rules to reorder · Up/Down remains available"
-        for caption in app.caption
+        caption.value == "Drag rules into order · Up/Down remains available"
+        for caption in sorter.caption
     )
-    assert not any(expander.label == "Drag to reorder" for expander in app.expander)
 
     eligibility_rule = next(button for button in app.button if button.label.startswith("10"))
     eligibility_rule.click()
