@@ -32,7 +32,9 @@ def inject_styles() -> None:
             --studio-input-border: #B7C4D8;
             --studio-border: #61718B;
             --studio-rule: #38BDF8;
-            --studio-rule-input-border: #E2E8F0;
+            --studio-rule-input: #F1F5F9;
+            --studio-rule-input-border: #FFFFFF;
+            --studio-rule-input-text: #0F172A;
             --studio-group: #A78BFA;
             --studio-condition: #F59E0B;
             --studio-assignment: #34D399;
@@ -101,8 +103,38 @@ def inject_styles() -> None:
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"],
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"],
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea {
+            background-color: var(--studio-rule-input) !important;
             border: 2px solid var(--studio-rule-input-border) !important;
-            box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.2) !important;
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4) !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="base-input"],
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="base-input"],
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] input,
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input,
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea {
+            background-color: var(--studio-rule-input) !important;
+            color: var(--studio-rule-input-text) !important;
+            -webkit-text-fill-color: var(--studio-rule-input-text) !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] input,
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input {
+            outline: 2px solid var(--studio-rule-input-border) !important;
+            outline-offset: -2px;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] input::placeholder,
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input::placeholder,
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea::placeholder {
+            color: #475569 !important;
+            -webkit-text-fill-color: #475569 !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] button {
+            background-color: #CBD5E1 !important;
+            color: var(--studio-rule-input-text) !important;
+            border-left: 1px solid #94A3B8 !important;
         }
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:hover,
@@ -113,8 +145,11 @@ def inject_styles() -> None:
 
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
-        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:focus {
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:focus,
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] input:focus,
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input:focus {
             border-color: #F5F3FF !important;
+            outline-color: #A78BFA !important;
             box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.75) !important;
         }
 
