@@ -34,13 +34,15 @@ def render() -> None:
         return
 
     columns = state.columns()
-    _header(rule)
-    st.divider()
-    _conditions(rule, columns)
-    st.divider()
-    _assignments(rule, columns)
-    st.divider()
-    _try_it(rule)
+    with st.container(key=f"rule_node_{rule.uid}"):
+        st.markdown('<div class="studio-node-label">Rule</div>', unsafe_allow_html=True)
+        _header(rule)
+        st.divider()
+        _conditions(rule, columns)
+        st.divider()
+        _assignments(rule, columns)
+        st.divider()
+        _try_it(rule)
 
 
 # --------------------------------------------------------------------------
@@ -52,9 +54,7 @@ def _header(rule: Rule) -> None:
     """Render canonical rule identity, description, order, and flags."""
     top = st.columns([2, 3, 4])
     rule.rule_id = top[0].text_input("Rule id", value=rule.rule_id, key=f"rid-{rule.uid}")
-    rule.rule_name = top[1].text_input(
-        "Rule name", value=rule.rule_name, key=f"rname-{rule.uid}"
-    )
+    rule.rule_name = top[1].text_input("Rule name", value=rule.rule_name, key=f"rname-{rule.uid}")
     rule.description = top[2].text_input(
         "Description",
         value=rule.description,
@@ -69,7 +69,9 @@ def _header(rule: Rule) -> None:
         )
     )
     rule.active_flag = flags[1].toggle(
-        "Active", value=rule.active_flag, key=f"ractive-{rule.uid}",
+        "Active",
+        value=rule.active_flag,
+        key=f"ractive-{rule.uid}",
         help="Inactive rules are skipped entirely and never appear in matched_rule_ids.",
     )
     rule.stop_on_match = flags[2].toggle(
@@ -79,7 +81,9 @@ def _header(rule: Rule) -> None:
         help="When this rule matches, no later rule runs. A non-match never stops evaluation.",
     )
     if not rule.active_flag:
-        flags[3].warning("Inactive — this rule is excluded from evaluation.", icon=":material/block:")
+        flags[3].warning(
+            "Inactive — this rule is excluded from evaluation.", icon=":material/block:"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -90,7 +94,7 @@ def _header(rule: Rule) -> None:
 def _conditions(rule: Rule, columns: Sequence[str]) -> None:
     """Render the nested canonical condition tree for one rule."""
     st.subheader("When")
-    st.caption("Rows that satisfy this run the assignments below.")
+    st.caption("Rule → root group → nested groups and conditions")
     _group(rule.conditions, None, columns, depth=0)
 
 
@@ -101,7 +105,12 @@ def _group(
     depth: int,
 ) -> None:
     """Render one logical group and recursively render child groups."""
-    with st.container(border=True):
+    with st.container(border=True, key=f"group_depth_{depth}_{group.uid}"):
+        node_label = "Root group" if depth == 0 else f"Nested group · level {depth}"
+        st.markdown(
+            f'<div class="studio-node-label">{node_label}</div>',
+            unsafe_allow_html=True,
+        )
         head = st.columns([2, 3, 1, 1, 1])
         group.logical_operator = head[0].selectbox(
             "Match",
@@ -137,7 +146,8 @@ def _group(
 
 def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[str]) -> None:
     """Render one canonical condition with operand-level null behavior."""
-    with st.container(border=True):
+    with st.container(border=True, key=f"condition_{condition.uid}"):
+        st.markdown('<div class="studio-node-label">Condition</div>', unsafe_allow_html=True)
         meta = st.columns([4, 1, 1, 1])
         condition.condition_id = meta[0].text_input(
             "Condition id",
@@ -230,7 +240,11 @@ def _assignments(rule: Rule, columns: Sequence[str]) -> None:
         st.caption("No assignments yet.")
 
     for assignment in list(rule.assignments):
-        with st.container(border=True):
+        with st.container(border=True, key=f"assignment_{assignment.uid}"):
+            st.markdown(
+                '<div class="studio-node-label">Assignment</div>',
+                unsafe_allow_html=True,
+            )
             assignment.assignment_id = st.text_input(
                 "Assignment id",
                 value=assignment.assignment_id,
@@ -298,7 +312,9 @@ def _try_it(rule: Rule) -> None:
         return
 
     labels = [_row_label(i, row) for i, row in enumerate(rows)]
-    picked = st.selectbox("Sample row", range(len(rows)), format_func=lambda i: labels[i], key=f"try-{rule.uid}")
+    picked = st.selectbox(
+        "Sample row", range(len(rows)), format_func=lambda i: labels[i], key=f"try-{rule.uid}"
+    )
     row = rows[picked]
 
     try:
@@ -339,9 +355,7 @@ def _trace(traces: list[dict[str, Any]]) -> None:
             detail += f" · right={value_badge(right.get('value'))}"
         if left.get("default_applied") or right.get("default_applied"):
             detail += " · null default applied"
-        st.markdown(
-            f"{mark} `{trace.get('condition_id')}` · `{trace.get('operator')}` · {detail}"
-        )
+        st.markdown(f"{mark} `{trace.get('condition_id')}` · `{trace.get('operator')}` · {detail}")
 
 
 def _row_label(index: int, row: dict[str, Any]) -> str:

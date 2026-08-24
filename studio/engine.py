@@ -10,18 +10,27 @@ semantics of its own.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from pyspark.sql import types as T
 from rules_engine.compiler_yaml import YamlRulesetCompiler
 from rules_engine.exceptions import RulesEngineError
 from rules_engine.models import Ruleset as CompiledRuleset
 from rules_engine.runtime import SparkRowEvaluator
+from rules_engine.serializer import DeltaRowSerializer
+from rules_engine.spark_runtime import SparkRulesEngineRuntime
+
+from rules_engine import __version__
 
 from . import custom_functions
 from .schema import Assignment, Condition, Operand, Rule, Ruleset
 
 COMPACT_FIELDS = ("error", "matched", "matched_rule_ids", "assign")
+FULL_AUDIT_ONLY_FIELDS = ("matched_rules", "assignment_results")
+AUDIT_IDENTITY_FIELDS = ("ruleset", "engine_version")
+FULL_AUDIT_FIELDS = COMPACT_FIELDS + FULL_AUDIT_ONLY_FIELDS + AUDIT_IDENTITY_FIELDS
 _ENGINE_EXCEPTIONS = (ArithmeticError, KeyError, RulesEngineError, TypeError, ValueError)
 
 
@@ -53,6 +62,18 @@ class Resolution:
     detail: str
     children: list[Resolution] = field(default_factory=list)
     trace: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _SparkRow:
+    """Expose a mapping through the Spark-row contract used by the engine worker."""
+
+    values: Mapping[str, Any]
+
+    def asDict(self, recursive: bool = True) -> dict[str, Any]:  # noqa: N802
+        """Return row values through the ``pyspark.sql.Row`` method contract."""
+        del recursive
+        return dict(self.values)
 
 
 def compile_ruleset(ruleset: Ruleset) -> CompiledRuleset:
@@ -289,20 +310,35 @@ def evaluate_assignment(
     return resolve_operand(assignment.value, row, functions)
 
 
-def empty_result() -> dict[str, Any]:
+def result_fields(*, full_audit: bool = False) -> tuple[str, ...]:
+    """Return studio output fields for the requested production audit detail."""
+    return FULL_AUDIT_FIELDS if full_audit else COMPACT_FIELDS
+
+
+def empty_result(*, full_audit: bool = False) -> dict[str, Any]:
     """Return the stable studio wrapper around an unevaluated production result."""
-    return {
+    result = {
         "error": None,
         "matched": False,
         "matched_rule_ids": [],
         "assign": {},
     }
+    if full_audit:
+        result.update(
+            matched_rules=[],
+            assignment_results=[],
+            ruleset=None,
+            engine_version=__version__,
+        )
+    return result
 
 
 def evaluate_row(
     ruleset: Ruleset,
     row: dict[str, Any],
     functions: Any | None = None,
+    *,
+    full_audit: bool = False,
 ) -> dict[str, Any]:
     """
     Evaluate one row using the production worker-side runtime.
@@ -316,15 +352,24 @@ def evaluate_row(
     functions : Any | None, default None
         Retained for API compatibility. The authoritative registry is always
         used.
+    full_audit : bool, default False
+        Include production matched-rule traces, assignment provenance, and
+        immutable engine identity.
+
     Returns
     -------
     dict[str, Any]
         Production match and assignment result plus a studio error field.
     """
     del functions
-    result = empty_result()
+    result = empty_result(full_audit=full_audit)
     try:
-        result.update(_runtime().evaluate_row(compile_ruleset(ruleset), row))
+        compiled = compile_ruleset(ruleset)
+        compact = _runtime().evaluate_row(compiled, row)
+        if full_audit:
+            result.update(_full_audit_result(compiled, row, compact))
+        else:
+            result.update(compact)
     except _ENGINE_EXCEPTIONS as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result
@@ -334,6 +379,59 @@ def evaluate_rows(
     ruleset: Ruleset,
     rows: list[dict[str, Any]],
     functions: Any | None = None,
+    *,
+    full_audit: bool = False,
 ) -> list[dict[str, Any]]:
     """Evaluate input rows independently with production row semantics."""
-    return [evaluate_row(ruleset, row, functions) for row in rows]
+    return [evaluate_row(ruleset, row, functions, full_audit=full_audit) for row in rows]
+
+
+def _full_audit_result(
+    ruleset: CompiledRuleset,
+    row: Mapping[str, Any],
+    compact: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate one row with the production Spark worker full-audit contract."""
+    assignment_fields = sorted(
+        {assignment.target_field for rule in ruleset.rules for assignment in rule.assignments}
+    )
+    assignment_types = {
+        field_name: _spark_type_for_assignment(field_name, row, compact)
+        for field_name in assignment_fields
+    }
+    evaluator = SparkRulesEngineRuntime(object(), custom_functions.registry())._build_row_evaluator(
+        ruleset,
+        assignment_fields,
+        assignment_types,
+        full_audit=True,
+    )
+    audit = evaluator(_SparkRow(row))
+    for field_name in COMPACT_FIELDS:
+        if field_name != "error":
+            audit[field_name] = compact[field_name]
+    audit.update(
+        ruleset={
+            "id": ruleset.ruleset_id,
+            "version": ruleset.version,
+            "content_hash": DeltaRowSerializer().content_hash(ruleset),
+        },
+        engine_version=__version__,
+    )
+    return audit
+
+
+def _spark_type_for_assignment(
+    field_name: str,
+    row: Mapping[str, Any],
+    compact: Mapping[str, Any],
+) -> T.DataType:
+    """Infer the Spark normalization type from the production compact result."""
+    assignment = compact.get("assign", {}).get(field_name, {})
+    value = assignment.get("value") if assignment.get("applied") else row.get(field_name)
+    if value is None:
+        return T.StringType()
+    try:
+        inferred = T._infer_type(value)
+    except (TypeError, ValueError):
+        return T.StringType()
+    return T.StringType() if isinstance(inferred, T.NullType) else inferred

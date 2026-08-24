@@ -80,7 +80,8 @@ LITERAL_TYPES = (
     "date",
     "timestamp",
     "timestamp_ntz",
-    "list",
+    "array",
+    "struct",
     "null",
 )
 LOGIC_MODES = ("all", "any")
@@ -202,14 +203,18 @@ class Operand:
                 "custom_function": {
                     "name": self.function,
                     "args": {
-                        str(name): _argument_to_payload(value)
-                        for name, value in self.args.items()
+                        str(name): _argument_to_payload(value) for name, value in self.args.items()
                     },
                 }
             }
         else:
             payload = {"literal": self.value}
-            if self.value_type and self.value_type not in {"list", "null"}:
+            if self.value_type and self.value_type not in {
+                "array",
+                "list",
+                "null",
+                "struct",
+            }:
                 payload["value_type"] = self.value_type
         if self.default_if_null is not None:
             fallback = self.default_if_null.to_dict()
@@ -267,8 +272,7 @@ class Operand:
                 kind="custom_function",
                 function=str(function.get("name") or ""),
                 args={
-                    str(name): _argument_from_payload(value)
-                    for name, value in arguments.items()
+                    str(name): _argument_from_payload(value) for name, value in arguments.items()
                 },
                 default_if_null=default_operand,
             )
@@ -305,7 +309,9 @@ def infer_literal_type(value: Any) -> str:
     if isinstance(value, (float, Decimal)):
         return "decimal"
     if isinstance(value, (list, tuple, set)):
-        return "list"
+        return "array"
+    if isinstance(value, Mapping):
+        return "struct"
     return "string"
 
 
@@ -584,9 +590,7 @@ class Ruleset:
             owner=str(data.get("owner") or ""),
             owner_department=str(data.get("owner_department") or ""),
             rules=[
-                Rule.from_dict(rule)
-                for rule in data.get("rules", [])
-                if isinstance(rule, Mapping)
+                Rule.from_dict(rule) for rule in data.get("rules", []) if isinstance(rule, Mapping)
             ],
         )
 

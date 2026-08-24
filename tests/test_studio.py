@@ -9,6 +9,7 @@ function registry, row evaluation, and uploaded test data.
 from __future__ import annotations
 
 import ast
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -228,7 +229,7 @@ def test_missing_test_field_is_a_warning_after_engine_validation():
 def test_referenced_columns_include_nested_function_arguments():
     """Coverage must traverse operand collections inside function arguments."""
     draft = sample_data.demo_ruleset()
-    assert {"cost_centre", "job_family"} <= referenced_columns(draft)
+    assert {"LoanNo", "Extract"} <= referenced_columns(draft)
 
 
 def test_row_evaluation_uses_named_function_arguments():
@@ -358,6 +359,82 @@ def test_csv_upload_is_available_for_test_data():
         {"case_id": "A", "score": 1},
         {"case_id": "B", "score": 2},
     ]
+
+
+def test_csv_upload_parses_every_date_named_column():
+    """CSV columns containing date are parsed to date values with null blanks."""
+    frame = sample_data.read_uploaded(
+        "loans.csv",
+        b"LoanNo,EffectiveDate,currentdate,StatusFlag\nA,8/14/2026,12/31/2025,yes\nB,,,no\n",
+    )
+    assert frame.loc[0, "EffectiveDate"] == date(2026, 8, 14)
+    assert frame.loc[0, "currentdate"] == date(2025, 12, 31)
+    assert frame.loc[1, "EffectiveDate"] is None
+    assert frame.loc[0, "StatusFlag"] == "yes"
+
+
+def test_demo_rows_use_loan_data_with_structs_arrays_and_dates():
+    """Starter rows preserve the supplied loan domain and structured test values."""
+    frame = sample_data.demo_frame()
+    assert frame["LoanNo"].tolist() == [f"XXXX{number}" for number in range(4, 14)]
+    assert frame.loc[0, "EffectiveDate"] == date(2026, 8, 14)
+    assert isinstance(frame.loc[0, "StructColumn"], dict)
+    assert isinstance(frame.loc[0, "ArrayColumn"], list)
+
+
+def test_struct_and_array_literals_work_in_conditions_and_assignments():
+    """Canonical nested literals evaluate and assign without a studio-only dialect."""
+    metadata = {"risk_band": "High", "manual_review": True}
+    tags = ["NonDSCR", "Watch"]
+    draft = ruleset(
+        rule(
+            "structured",
+            10,
+            [
+                condition(
+                    "condition:structured:struct", field("metadata"), "eq", literal(metadata)
+                ),
+                condition("condition:structured:array", field("tags"), "eq", literal(tags)),
+            ],
+            [
+                assignment("assignment:structured:metadata", "output_metadata", literal(metadata)),
+                assignment("assignment:structured:tags", "output_tags", literal(tags)),
+            ],
+        )
+    )
+    result = engine.evaluate_row(draft, {"metadata": metadata, "tags": tags})
+    assert result["error"] is None
+    assert result["matched"] is True
+    assert result["assign"]["output_metadata"]["value"] == metadata
+    assert result["assign"]["output_tags"]["value"] == tags
+
+
+def test_full_audit_uses_production_trace_and_override_contract():
+    """Full audit exposes matched conditions, provenance, overrides, and identity."""
+    draft = ruleset(
+        rule(
+            "first",
+            10,
+            [condition("condition:first", field("x"), "eq", literal(1, "integer"))],
+            [assignment("assignment:first:status", "status", literal("first"))],
+        ),
+        rule(
+            "second",
+            20,
+            [condition("condition:second", field("x"), "eq", literal(1, "integer"))],
+            [assignment("assignment:second:status", "status", literal("second"))],
+        ),
+    )
+    result = engine.evaluate_row(draft, {"x": 1}, full_audit=True)
+    assert result["error"] is None
+    assert [item["rule_id"] for item in result["matched_rules"]] == ["first", "second"]
+    assert result["matched_rules"][0]["conditions"][0]["passed"] is True
+    assert result["assignment_results"][0]["effective"] is False
+    assert result["assignment_results"][0]["overridden_by_rule_id"] == "second"
+    assert result["assignment_results"][1]["effective"] is True
+    assert result["ruleset"]["id"] == "studio_test"
+    assert result["ruleset"]["content_hash"]
+    assert result["engine_version"]
 
 
 def test_row_errors_are_captured_without_inventing_results():

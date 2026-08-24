@@ -21,12 +21,24 @@ def render() -> None:
     if not rows:
         st.info("Upload or enter test data before running the ruleset.")
         return
-    _single(rows)
+    detail = st.radio(
+        "Result detail",
+        ("Compact", "Full audit"),
+        horizontal=True,
+        index=1,
+        key="eval_detail",
+        help=(
+            "Full audit includes matched-rule explanations, resolved conditions, "
+            "assignment provenance, overrides, and ruleset identity."
+        ),
+    )
+    full_audit = detail == "Full audit"
+    _single(rows, full_audit=full_audit)
     st.divider()
-    _batch(rows)
+    _batch(rows, full_audit=full_audit)
 
 
-def _single(rows: list[dict[str, Any]]) -> None:
+def _single(rows: list[dict[str, Any]], *, full_audit: bool) -> None:
     """Run a selected authoring scope against one test row."""
     st.subheader("Inspect one row")
     picker = st.columns([2, 3])
@@ -43,7 +55,7 @@ def _single(rows: list[dict[str, Any]]) -> None:
         st.json(_jsonable(row))
 
     if scope == "Whole ruleset":
-        _whole_ruleset(row)
+        _whole_ruleset(row, full_audit=full_audit)
     elif scope == "One rule":
         _one_rule(row)
     elif scope == "One condition":
@@ -52,9 +64,9 @@ def _single(rows: list[dict[str, Any]]) -> None:
         _one_assignment(row)
 
 
-def _whole_ruleset(row: dict[str, Any]) -> None:
+def _whole_ruleset(row: dict[str, Any], *, full_audit: bool) -> None:
     """Render the stable business result from production row evaluation."""
-    result = engine.evaluate_row(state.draft(), row)
+    result = engine.evaluate_row(state.draft(), row, full_audit=full_audit)
     if result["error"]:
         st.error(f"Evaluation failed: {result['error']}")
         return
@@ -66,6 +78,8 @@ def _whole_ruleset(row: dict[str, Any]) -> None:
         + (", ".join(f"`{rule_id}`" for rule_id in result["matched_rule_ids"]) or "—")
     )
     _assignment_result_table(result["assign"])
+    if full_audit:
+        _full_audit(result)
 
 
 def _one_rule(row: dict[str, Any]) -> None:
@@ -126,9 +140,7 @@ def _one_condition(row: dict[str, Any]) -> None:
         return
     metrics = st.columns([1, 1, 1, 2])
     metrics[0].metric("Passed", "true" if result["matched"] else "false")
-    metrics[1].markdown(
-        f"**Left**<br>{value_badge(result['left_value'])}", unsafe_allow_html=True
-    )
+    metrics[1].markdown(f"**Left**<br>{value_badge(result['left_value'])}", unsafe_allow_html=True)
     metrics[2].markdown(
         f"**Right**<br>{value_badge(result['right_value'])}", unsafe_allow_html=True
     )
@@ -162,12 +174,12 @@ def _one_assignment(row: dict[str, Any]) -> None:
         st.json(_jsonable(resolution.trace or {}))
 
 
-def _batch(rows: list[dict[str, Any]]) -> None:
+def _batch(rows: list[dict[str, Any]], *, full_audit: bool) -> None:
     """Run the entire ruleset over every uploaded test row."""
     st.subheader("Run all test rows")
     prefix = st.session_state.get(state.PREFIX, "rules_engine")
-    results = engine.evaluate_rows(state.draft(), rows)
-    frame = _results_frame(rows, results, prefix)
+    results = engine.evaluate_rows(state.draft(), rows, full_audit=full_audit)
+    frame = _results_frame(rows, results, prefix, full_audit=full_audit)
     matched = sum(1 for result in results if result["matched"] and not result["error"])
     errors = sum(1 for result in results if result["error"])
     metrics = st.columns(4)
@@ -188,12 +200,14 @@ def _results_frame(
     rows: list[dict[str, Any]],
     results: list[dict[str, Any]],
     prefix: str,
+    *,
+    full_audit: bool,
 ) -> pd.DataFrame:
     """Combine input rows and stable production business results."""
     records: list[dict[str, Any]] = []
     for row, result in zip(rows, results, strict=True):
         record: dict[str, Any] = dict(row)
-        for field_name in engine.COMPACT_FIELDS:
+        for field_name in engine.result_fields(full_audit=full_audit):
             record[f"{prefix}_{field_name}"] = _cell(result[field_name])
         records.append(record)
     return pd.DataFrame(records)
@@ -206,7 +220,7 @@ def _assignment_result_table(assignments: dict[str, Any]) -> None:
         {
             "field": field_name,
             "applied": result["applied"],
-            "value": result["value"],
+            "value": _cell(result["value"]),
         }
         for field_name, result in assignments.items()
     ]
@@ -223,13 +237,77 @@ def _plain_assignment_table(assignments: dict[str, Any]) -> None:
     st.dataframe(
         pd.DataFrame(
             [
-                {"field": field_name, "value": value}
+                {"field": field_name, "value": _cell(value)}
                 for field_name, value in assignments.items()
             ]
         ),
         width="stretch",
         hide_index=True,
     )
+
+
+def _full_audit(result: dict[str, Any]) -> None:
+    """Render the production full-audit trace without reinterpreting it."""
+    st.markdown("#### Full audit")
+    identity = result.get("ruleset") or {}
+    identity_columns = st.columns([2, 1, 4])
+    identity_columns[0].markdown(f"**Ruleset**  `{identity.get('id', '—')}`")
+    identity_columns[1].markdown(f"**Version**  `{identity.get('version', '—')}`")
+    identity_columns[2].markdown(
+        f"**Content hash**  `{identity.get('content_hash', '—')}` · "
+        f"engine `{result.get('engine_version', '—')}`"
+    )
+
+    st.markdown("**Matched rule trace**")
+    matched_rules = result.get("matched_rules") or []
+    if not matched_rules:
+        st.caption("No rule matched this row.")
+    for matched_rule in matched_rules:
+        label = (
+            f"{matched_rule['rule_order']} · {matched_rule['rule_id']} · "
+            f"{len(matched_rule.get('conditions') or [])} conditions"
+        )
+        with st.expander(label, expanded=True):
+            st.markdown(matched_rule.get("explanation") or "No explanation emitted.")
+            applied = matched_rule.get("assignments_applied") or []
+            st.caption("Assignments applied: " + (", ".join(applied) or "none"))
+            condition_rows = []
+            for condition in matched_rule.get("conditions") or []:
+                left = condition.get("left") or {}
+                right = condition.get("right") or {}
+                condition_rows.append(
+                    {
+                        "group": condition.get("condition_group_id"),
+                        "condition": condition.get("condition_id"),
+                        "passed": condition.get("passed"),
+                        "left": left.get("value"),
+                        "operator": condition.get("operator"),
+                        "right": right.get("value"),
+                        "comparison": condition.get("comparison_result"),
+                        "source columns": ", ".join(condition.get("columns") or []),
+                    }
+                )
+            st.dataframe(pd.DataFrame(condition_rows), width="stretch", hide_index=True)
+            st.caption("Resolved operand trace")
+            st.json(_jsonable(matched_rule.get("conditions") or []), expanded=False)
+
+    st.markdown("**Assignment provenance**")
+    assignment_results = result.get("assignment_results") or []
+    if assignment_results:
+        st.dataframe(pd.DataFrame(assignment_results), width="stretch", hide_index=True)
+    else:
+        st.caption("No assignments were applied.")
+    with st.expander("Raw full-audit payload", expanded=False):
+        st.json(
+            _jsonable(
+                {
+                    "matched_rules": matched_rules,
+                    "assignment_results": assignment_results,
+                    "ruleset": identity,
+                    "engine_version": result.get("engine_version"),
+                }
+            )
+        )
 
 
 def _cell(value: Any) -> Any:
@@ -266,6 +344,8 @@ def _all_assignments() -> list[tuple[str, Rule, Assignment]]:
 
 def _row_label(index: int, row: dict[str, Any]) -> str:
     """Return a compact select-box label for one test row."""
+    if row.get("LoanNo"):
+        return f"{index + 1}. LoanNo={row['LoanNo']}"
     first = next(iter(row.items()), (None, None))
     return f"{index + 1}. {first[0]}={first[1]}" if first[0] else f"Row {index + 1}"
 

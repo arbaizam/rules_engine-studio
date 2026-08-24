@@ -15,8 +15,8 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
 
-    fallback_rule = next(button for button in app.button if button.label.startswith("30"))
-    fallback_rule.click()
+    loaded_rule = next(button for button in app.button if button.label.startswith("10"))
+    loaded_rule.click()
     app.run()
 
     assert not app.exception
@@ -25,3 +25,25 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     assert "decimal_safe_divide" in function.options
     assert "last_business_day_of_month" in function.options
     assert len(app.get("file_uploader")) == 2
+
+
+def test_app_renders_nested_literal_audit_and_hierarchy_controls():
+    """The rendered authoring surface exposes structured literals and full audit."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+    next(button for button in app.button if button.label.startswith("20")).click()
+    app.run()
+
+    assert not app.exception
+    literal_types = {
+        selectbox.value for selectbox in app.selectbox if selectbox.label == "Literal type"
+    }
+    assert {"array", "struct"} <= literal_types
+    assert {area.label for area in app.text_area} >= {"JSON array", "JSON object"}
+    assert (
+        next(radio for radio in app.radio if radio.label == "Result detail").value == "Full audit"
+    )
+    assert any(markdown.value == "#### Full audit" for markdown in app.markdown)
+
+    next(button for button in app.button if button.label.startswith("30")).click()
+    app.run()
+    assert any("Nested group" in markdown.value for markdown in app.markdown)

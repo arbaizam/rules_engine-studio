@@ -9,12 +9,12 @@ with the production registry.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from decimal import InvalidOperation
 from typing import Any
 
 import streamlit as st
-import yaml
 
 from .. import custom_functions
 from ..schema import LITERAL_TYPES, Operand, infer_literal_type
@@ -105,6 +105,8 @@ def operand_editor(
             in_assignment=in_assignment,
         )
     else:
+        if operand.value_type == "list":
+            operand.value_type = "array"
         operand.value_type = st.selectbox(
             "Literal type",
             LITERAL_TYPES,
@@ -172,9 +174,7 @@ def _function_editor(
         f"Returns `{specification.return_type_hint or 'any'}`."
     )
     allowed_names = set(specification.argument_names)
-    operand.args = {
-        name: value for name, value in operand.args.items() if name in allowed_names
-    }
+    operand.args = {name: value for name, value in operand.args.items() if name in allowed_names}
     for argument in specification.arguments:
         authored = argument.name in operand.args
         if not argument.required:
@@ -190,7 +190,9 @@ def _function_editor(
         if argument.literal_only:
             current = operand.args.get(
                 argument.name,
-                argument.default if not argument.required else _default_for_hint(argument.type_hint),
+                argument.default
+                if not argument.required
+                else _default_for_hint(argument.type_hint),
             )
             operand.args[argument.name] = _literal_argument_input(
                 argument,
@@ -346,10 +348,10 @@ def _literal_type_for_hint(type_hint: str, value: Any) -> str:
         "integer": "integer",
         "number": "decimal",
         "timestamp": "timestamp",
-        "sequence": "list",
-        "string_sequence": "list",
-        "integer_sequence": "list",
-        "date_sequence": "list",
+        "sequence": "array",
+        "string_sequence": "array",
+        "integer_sequence": "array",
+        "date_sequence": "array",
         "string": "string",
     }
     return mapping.get(type_hint, infer_literal_type(value))
@@ -369,6 +371,8 @@ def _default_if_null_editor(operand: Operand, key: str) -> None:
     if operand.default_if_null is None:
         operand.default_if_null = Operand(kind="literal", value="", value_type="string")
     fallback = operand.default_if_null
+    if fallback.value_type == "list":
+        fallback.value_type = "array"
     fallback.value_type = st.selectbox(
         "Default type",
         [kind for kind in LITERAL_TYPES if kind != "null"],
@@ -421,22 +425,12 @@ def literal_input(operand: Operand, key: str) -> Any:
             placeholder="0.00",
             label_visibility="collapsed",
         )
-    if kind == "list":
-        current = operand.value if isinstance(operand.value, (list, tuple, set)) else []
-        raw = st.text_input(
-            "Values",
-            value=", ".join(str(value) for value in current),
-            key=key,
-            placeholder="a, b, 3",
-            label_visibility="collapsed",
-        )
-        if not raw.strip():
-            return []
-        try:
-            parsed = yaml.safe_load(f"[{raw}]")
-        except yaml.YAMLError:
-            return [part.strip() for part in raw.split(",") if part.strip()]
-        return parsed if isinstance(parsed, list) else [parsed]
+    if kind in {"array", "list"}:
+        current = list(operand.value) if isinstance(operand.value, (list, tuple, set)) else []
+        return _json_literal_input(current, list, f"{key}-array", "JSON array")
+    if kind == "struct":
+        current = dict(operand.value) if isinstance(operand.value, dict) else {}
+        return _json_literal_input(current, dict, f"{key}-struct", "JSON object")
     placeholder = {
         "date": "2026-08-23",
         "timestamp": "2026-08-23T12:00:00+00:00",
@@ -449,6 +443,32 @@ def literal_input(operand: Operand, key: str) -> Any:
         placeholder=placeholder,
         label_visibility="collapsed",
     )
+
+
+def _json_literal_input(
+    current: list[Any] | dict[str, Any],
+    expected_type: type[list[Any]] | type[dict[str, Any]],
+    key: str,
+    label: str,
+) -> list[Any] | dict[str, Any]:
+    """Render and validate one canonical array or struct literal as JSON."""
+    raw = st.text_area(
+        label,
+        value=json.dumps(current, indent=2, default=str),
+        key=key,
+        height=112,
+        placeholder="[]" if expected_type is list else "{}",
+        label_visibility="collapsed",
+    )
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        st.error(f"Invalid {label}: {exc.msg} at line {exc.lineno}, column {exc.colno}.")
+        return current
+    if not isinstance(parsed, expected_type):
+        st.error(f"{label} must start with {'[' if expected_type is list else '{'}.")
+        return current
+    return parsed
 
 
 def _to_number(value: Any, fallback: float) -> float:
