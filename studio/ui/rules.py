@@ -35,7 +35,10 @@ def render() -> None:
 
     columns = state.columns()
     with st.container(key=f"rule_node_{rule.uid}"):
-        st.markdown('<div class="studio-node-label">Rule</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="studio-node-label studio-rule-label">Rule</div>',
+            unsafe_allow_html=True,
+        )
         _header(rule)
         st.divider()
         _conditions(rule, columns)

@@ -47,3 +47,15 @@ def test_app_renders_nested_literal_audit_and_hierarchy_controls():
     next(button for button in app.button if button.label.startswith("30")).click()
     app.run()
     assert any("Nested group" in markdown.value for markdown in app.markdown)
+
+
+def test_app_styles_separate_root_groups_and_inputs_from_panels():
+    """The authoring surface keeps root groups offset and input borders visible."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+    styles = next(markdown.value for markdown in app.markdown if "<style>" in markdown.value)
+    assert "--studio-input: #243044;" in styles
+    assert "--studio-input-border: #8797B0;" in styles
+    assert '[class*="st-key-group_depth_0_"]' in styles
+    assert "margin-left: 1.5rem;" in styles
+    assert ".studio-rule-label {" in styles
+    assert "margin-bottom: 1rem;" in styles

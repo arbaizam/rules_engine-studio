@@ -28,8 +28,9 @@ def inject_styles() -> None:
         :root {
             --studio-panel: #121824;
             --studio-panel-raised: #182131;
-            --studio-input: #0D1420;
-            --studio-border: #526078;
+            --studio-input: #243044;
+            --studio-input-border: #8797B0;
+            --studio-border: #61718B;
             --studio-rule: #38BDF8;
             --studio-group: #A78BFA;
             --studio-condition: #F59E0B;
@@ -52,15 +53,30 @@ def inject_styles() -> None:
         [data-testid="stFileUploader"] section,
         [data-testid="stDataEditor"] {
             background: var(--studio-input) !important;
-            border-color: var(--studio-border) !important;
+            border: 1px solid var(--studio-input-border) !important;
+            box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.08);
+        }
+
+        [data-testid="stTextInput"] input,
+        [data-testid="stNumberInput"] input,
+        [data-testid="stTextArea"] textarea,
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+            color: #F8FAFC !important;
+        }
+
+        [data-testid="stTextInput"] [data-baseweb="input"]:hover,
+        [data-testid="stNumberInput"] [data-baseweb="input"]:hover,
+        [data-testid="stTextArea"] textarea:hover,
+        [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover {
+            border-color: #B0BED2 !important;
         }
 
         [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
         [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
         [data-testid="stTextArea"] textarea:focus,
         [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within {
-            border-color: #A78BFA !important;
-            box-shadow: 0 0 0 1px #A78BFA !important;
+            border-color: #C4B5FD !important;
+            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.55) !important;
         }
 
         [data-testid="stVerticalBlockBorderWrapper"] {
@@ -98,6 +114,11 @@ def inject_styles() -> None:
             width: calc(100% - 1.25rem);
         }
 
+        [class*="st-key-group_depth_0_"] {
+            margin-left: 1.5rem;
+            width: calc(100% - 1.5rem);
+        }
+
         .studio-node-label {
             color: #CBD5E1;
             font-size: 0.72rem;
@@ -105,6 +126,10 @@ def inject_styles() -> None:
             letter-spacing: 0.11em;
             margin-bottom: 0.2rem;
             text-transform: uppercase;
+        }
+
+        .studio-rule-label {
+            margin-bottom: 1rem;
         }
         </style>
         """,
