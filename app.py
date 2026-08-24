@@ -294,8 +294,8 @@ def sidebar() -> None:
         if not ordered:
             st.caption("None yet.")
         elif len(ordered) > 1:
-            with st.expander("Drag to reorder", expanded=False):
-                _render_rule_sorter(ordered)
+            st.caption("Drag rules to reorder · Up/Down remains available")
+            _render_rule_sorter(ordered)
         for rule in ordered:
             selected = rule.uid == st.session_state.get(state.SELECTED)
             label = f"{rule.rule_order} · {rule.rule_id or 'untitled'}"

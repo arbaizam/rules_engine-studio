@@ -16,6 +16,11 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     """The rendered app exposes every function and both data/YAML uploaders."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
+    assert any(
+        caption.value == "Drag rules to reorder · Up/Down remains available"
+        for caption in app.caption
+    )
+    assert not any(expander.label == "Drag to reorder" for expander in app.expander)
 
     eligibility_rule = next(button for button in app.button if button.label.startswith("10"))
     eligibility_rule.click()
@@ -27,7 +32,6 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     assert "decimal_safe_divide" in function.options
     assert "last_business_day_of_month" in function.options
     assert len(app.get("file_uploader")) == 2
-    assert any(expander.label == "Drag to reorder" for expander in app.expander)
 
 
 def test_app_renders_nested_literal_audit_and_hierarchy_controls():
