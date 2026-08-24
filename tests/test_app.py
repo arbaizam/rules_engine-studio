@@ -63,6 +63,8 @@ def test_app_styles_separate_root_groups_and_inputs_from_panels():
     assert "background-color: var(--studio-rule-input)" in styles
     assert "-webkit-text-fill-color: var(--studio-rule-input-text)" in styles
     assert '[data-testid="stSelectbox"]' in styles
+    assert '[data-testid="stSelectbox"] > div:last-child' in styles
+    assert '[data-testid="stMultiSelect"] > div:last-child' in styles
     assert '[data-baseweb="select"] {' in styles
     assert "box-shadow: 0 0 0 1px var(--studio-rule-input-border)" in styles
     assert '[class*="st-key-rule_node_"]' in styles

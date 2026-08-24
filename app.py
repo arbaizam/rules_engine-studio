@@ -103,6 +103,8 @@ def inject_styles() -> None:
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"],
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"],
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea,
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] > div:last-child,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] > div:last-child,
         [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
         [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
         [class*="st-key-rule_node_"] [data-testid="stDateInput"] [data-baseweb="input"],
@@ -128,12 +130,16 @@ def inject_styles() -> None:
             outline-offset: -1px;
         }
 
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] > div:last-child,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] > div:last-child,
         [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"],
         [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] {
             border-radius: 0.55rem !important;
             box-shadow: 0 0 0 1px var(--studio-rule-input-border) !important;
         }
 
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] > div:last-child,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] > div:last-child,
         [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
         [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
             background-color: var(--studio-rule-input) !important;
@@ -155,6 +161,8 @@ def inject_styles() -> None:
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:hover,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:hover,
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:hover,
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] > div:last-child:hover,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] > div:last-child:hover,
         [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
         [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div:hover {
             border-color: #C4CFDD !important;
@@ -168,6 +176,8 @@ def inject_styles() -> None:
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:focus,
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] > div:last-child:focus-within,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] > div:last-child:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] input:focus,
