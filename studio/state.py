@@ -10,7 +10,7 @@ get a widget-key collision.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import pandas as pd
@@ -166,6 +166,27 @@ def move_rule(uid: str, offset: int) -> None:
         return
     a, b = ordered[index], ordered[target]
     a.rule_order, b.rule_order = b.rule_order, a.rule_order
+
+
+def reorder_rules(uid_order: Sequence[str]) -> bool:
+    """Apply a complete drag order while preserving the current order values."""
+    ruleset = draft()
+    ordered = ruleset.ordered_rules()
+    current_uids = [rule.uid for rule in ordered]
+    requested_uids = list(uid_order)
+    if len(requested_uids) != len(current_uids) or set(requested_uids) != set(current_uids):
+        return False
+    if requested_uids == current_uids:
+        return False
+
+    order_values = [rule.rule_order for rule in ordered]
+    if len(set(order_values)) != len(order_values):
+        order_values = list(range(10, 10 * (len(ordered) + 1), 10))
+    rules_by_uid = {rule.uid: rule for rule in ordered}
+    for rule_order, uid in zip(order_values, requested_uids, strict=True):
+        rules_by_uid[uid].rule_order = rule_order
+    ruleset.rules = [rules_by_uid[uid] for uid in requested_uids]
+    return True
 
 
 def _unique_rule_id(ruleset: Ruleset, candidate: str) -> str:

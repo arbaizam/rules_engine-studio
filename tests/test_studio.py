@@ -16,7 +16,7 @@ from pathlib import Path
 from rules_engine.enums import ComparisonOperator, OperandKind
 from rules_engine.standard_functions import STANDARD_FUNCTION_SPECS
 
-from studio import custom_functions, engine, sample_data, yaml_io
+from studio import custom_functions, engine, sample_data, state, yaml_io
 from studio.schema import (
     OPERATOR_NAMES,
     Assignment,
@@ -166,6 +166,51 @@ def test_demo_ruleset_passes_production_validation():
     assert yaml_io.validate(sample_data.demo_ruleset()) == []
 
 
+def test_demo_eligibility_rule_applies_fico_and_dscr_policy():
+    """The first starter rule rejects low or missing FICO and low DSCR."""
+    eligibility = sample_data.demo_ruleset().ordered_rules()[0]
+
+    assert eligibility.rule_id == "eligibility"
+    assert eligibility.rule_name == "Eligibility"
+    assert eligibility.stop_on_match is True
+    assert eligibility.conditions.logical_operator == "any"
+    assert engine.evaluate_rule(
+        eligibility,
+        {"CurrentFICO": 619, "OriginalFICO": 700, "CurrentDSCR": 1.2},
+    )["matched"]
+    assert engine.evaluate_rule(
+        eligibility,
+        {"CurrentFICO": None, "OriginalFICO": None, "CurrentDSCR": 1.2},
+    )["matched"]
+    assert engine.evaluate_rule(
+        eligibility,
+        {"CurrentFICO": 700, "OriginalFICO": 710, "CurrentDSCR": 1.19},
+    )["matched"]
+    assert not engine.evaluate_rule(
+        eligibility,
+        {"CurrentFICO": None, "OriginalFICO": 700, "CurrentDSCR": 1.2},
+    )["matched"]
+
+    result = engine.evaluate_row(
+        sample_data.demo_ruleset(),
+        {"CurrentFICO": None, "OriginalFICO": None, "CurrentDSCR": 1.2},
+    )
+    assert result["matched_rule_ids"] == ["eligibility"]
+    assert result["assign"]["ReviewStatus"] == {"applied": True, "value": "Ineligible"}
+
+
+def test_drag_reorder_preserves_rule_order_slots(monkeypatch):
+    """A complete drag order reassigns existing production order values."""
+    draft = sample_data.demo_ruleset()
+    original_orders = [rule.rule_order for rule in draft.ordered_rules()]
+    requested_uids = [rule.uid for rule in reversed(draft.ordered_rules())]
+    monkeypatch.setattr(state, "draft", lambda: draft)
+
+    assert state.reorder_rules(requested_uids)
+    assert [rule.uid for rule in draft.ordered_rules()] == requested_uids
+    assert [rule.rule_order for rule in draft.ordered_rules()] == original_orders
+
+
 def test_yaml_round_trip_uses_canonical_compiler_and_exporter():
     """Exported YAML must round-trip without a parallel studio dialect."""
     draft = sample_data.demo_ruleset()
@@ -229,7 +274,7 @@ def test_missing_test_field_is_a_warning_after_engine_validation():
 def test_referenced_columns_include_nested_function_arguments():
     """Coverage must traverse operand collections inside function arguments."""
     draft = sample_data.demo_ruleset()
-    assert {"LoanNo", "Extract"} <= referenced_columns(draft)
+    assert {"CurrentFICO", "OriginalFICO", "CurrentDSCR"} <= referenced_columns(draft)
 
 
 def test_row_evaluation_uses_named_function_arguments():

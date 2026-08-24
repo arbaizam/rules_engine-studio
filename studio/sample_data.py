@@ -261,48 +261,71 @@ def _lit(value: Any, value_type: str = "string") -> Operand:
     return Operand(kind="literal", value=value, value_type=value_type)
 
 
+def _available_fico() -> Operand:
+    """Return the current FICO with original FICO as the fallback."""
+    return Operand(
+        kind="custom_function",
+        function="coalesce",
+        args={"values": [_field("CurrentFICO"), _field("OriginalFICO")]},
+    )
+
+
 def demo_ruleset() -> Ruleset:
     """Return a valid canonical starter ruleset with representative behavior."""
-    loaded_loan = Rule(
-        rule_id="loaded_loan",
-        rule_name="Loaded loan",
-        description="Initialize audit outputs for every identified loan.",
+    eligibility = Rule(
+        rule_id="eligibility",
+        rule_name="Eligibility",
+        description=(
+            "Deem a loan ineligible when its current-or-original FICO is below 620 or "
+            "unavailable, or CurrentDSCR is below 1.20."
+        ),
         rule_order=10,
-        stop_on_match=False,
+        stop_on_match=True,
         conditions=ConditionGroup(
-            logical_operator="all",
+            logical_operator="any",
             children=[
                 Condition(
-                    condition_id="condition:loaded_loan:loan_number",
-                    left=_field("LoanNo"),
-                    operator="is_not_null",
+                    condition_id="condition:eligibility:fico_below_minimum",
+                    left=_available_fico(),
+                    operator="lt",
+                    right=_lit(620, "integer"),
+                ),
+                Condition(
+                    condition_id="condition:eligibility:fico_missing",
+                    left=_available_fico(),
+                    operator="is_null",
                     right=None,
                 ),
+                Condition(
+                    condition_id="condition:eligibility:dscr_below_minimum",
+                    left=_field("CurrentDSCR"),
+                    operator="lt",
+                    right=_lit("1.2", "decimal"),
+                ),
             ],
-            condition_group_id="group:loaded_loan:root",
+            condition_group_id="group:eligibility:root",
         ),
         assignments=[
             Assignment(
-                assignment_id="assignment:loaded_loan:audit_key",
-                target_field="AuditKey",
-                value=Operand(
-                    kind="custom_function",
-                    function="concat_ws",
-                    args={
-                        "values": [_field("LoanNo"), _field("Extract")],
-                        "separator": "/",
-                    },
-                ),
-            ),
-            Assignment(
-                assignment_id="assignment:loaded_loan:review_status",
+                assignment_id="assignment:eligibility:review_status",
                 target_field="ReviewStatus",
-                value=_lit("Pending"),
+                value=_lit("Ineligible"),
             ),
             Assignment(
-                assignment_id="assignment:loaded_loan:audit_tags",
+                assignment_id="assignment:eligibility:audit_tags",
                 target_field="AuditTags",
-                value=_lit(["Loaded"], "array"),
+                value=_lit(["Eligibility", "Ineligible"], "array"),
+            ),
+            Assignment(
+                assignment_id="assignment:eligibility:decision_detail",
+                target_field="DecisionDetail",
+                value=_lit(
+                    {
+                        "status": "ineligible",
+                        "policy": "FICO < 620 or missing, or CurrentDSCR < 1.20",
+                    },
+                    "struct",
+                ),
             ),
         ],
     )
@@ -489,7 +512,7 @@ def demo_ruleset() -> Ruleset:
         owner="Rules Team",
         owner_department="Credit Risk",
         rules=[
-            loaded_loan,
+            eligibility,
             dscr_coverage,
             non_dscr_risk,
             partial_extract,

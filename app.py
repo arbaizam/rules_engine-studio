@@ -8,8 +8,10 @@ with the production row runtime, and exports compiler-validated YAML.
 from __future__ import annotations
 
 import streamlit as st
+from streamlit_sortables import sort_items
 
 from studio import state, yaml_io
+from studio.schema import Rule
 from studio.ui import data, evaluate, rules, yaml_tab
 
 st.set_page_config(
@@ -18,6 +20,60 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+_RULE_SORT_STYLE = """
+.sortable-component {
+    background: transparent;
+    padding: 0;
+}
+.sortable-component.vertical {
+    gap: 0.35rem;
+}
+.sortable-component.vertical .sortable-container,
+.sortable-container-body {
+    background: transparent;
+    padding: 0;
+}
+.sortable-item,
+.sortable-item:hover {
+    background: #151923;
+    border: 2px solid #566780;
+    border-radius: 0.55rem;
+    color: #F8FAFC;
+    cursor: grab;
+    font-size: 0.88rem;
+    margin: 0.3rem 0;
+    padding: 0.55rem 0.65rem;
+}
+.sortable-item:hover {
+    border-color: #94A3B8;
+    background: #182131;
+}
+.sortable-item:active {
+    cursor: grabbing;
+}
+"""
+
+
+def _render_rule_sorter(ordered: list[Rule]) -> None:
+    """Render drag ordering and commit changed positions to rule order values."""
+    labels: list[str] = []
+    rules_by_label: dict[str, Rule] = {}
+    for rule in ordered:
+        label = f"{rule.rule_order} · {rule.rule_id} — {rule.rule_name}"
+        if label in rules_by_label:
+            label = f"{label} · {rule.uid[:6]}"
+        labels.append(label)
+        rules_by_label[label] = rule
+    signature = "-".join(rule.uid for rule in ordered)
+    dragged = sort_items(
+        labels,
+        direction="vertical",
+        custom_style=_RULE_SORT_STYLE,
+        key=f"rule-order-{signature}",
+    )
+    if dragged != labels and state.reorder_rules([rules_by_label[label].uid for label in dragged]):
+        st.rerun()
 
 
 def inject_styles() -> None:
@@ -237,6 +293,9 @@ def sidebar() -> None:
 
         if not ordered:
             st.caption("None yet.")
+        elif len(ordered) > 1:
+            with st.expander("Drag to reorder", expanded=False):
+                _render_rule_sorter(ordered)
         for rule in ordered:
             selected = rule.uid == st.session_state.get(state.SELECTED)
             label = f"{rule.rule_order} · {rule.rule_id or 'untitled'}"

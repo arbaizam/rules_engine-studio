@@ -17,16 +17,17 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
 
-    loaded_rule = next(button for button in app.button if button.label.startswith("10"))
-    loaded_rule.click()
+    eligibility_rule = next(button for button in app.button if button.label.startswith("10"))
+    eligibility_rule.click()
     app.run()
 
     assert not app.exception
-    function = next(selectbox for selectbox in app.selectbox if selectbox.value == "concat_ws")
+    function = next(selectbox for selectbox in app.selectbox if selectbox.value == "coalesce")
     assert len(function.options) == 58
     assert "decimal_safe_divide" in function.options
     assert "last_business_day_of_month" in function.options
     assert len(app.get("file_uploader")) == 2
+    assert any(expander.label == "Drag to reorder" for expander in app.expander)
 
 
 def test_app_renders_nested_literal_audit_and_hierarchy_controls():
