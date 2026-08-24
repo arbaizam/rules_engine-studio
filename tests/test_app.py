@@ -49,24 +49,25 @@ def test_app_renders_nested_literal_audit_and_hierarchy_controls():
     assert any("Nested group" in markdown.value for markdown in app.markdown)
 
 
-def test_app_styles_separate_root_groups_and_inputs_from_panels():
-    """The authoring surface keeps root groups offset and input borders visible."""
+def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
+    """The authoring surface uses one control treatment and offsets root groups."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     styles = next(markdown.value for markdown in app.markdown if "<style>" in markdown.value)
-    assert "--studio-input: #3A4B66;" in styles
-    assert "--studio-input-border: #B7C4D8;" in styles
-    assert "--studio-rule-input: #263449;" in styles
-    assert "--studio-rule-input-border: #94A3B8;" in styles
-    assert "--studio-rule-input-text: #F8FAFC;" in styles
-    assert "border: 2px solid var(--studio-input-border)" in styles
-    assert "border: 1px solid var(--studio-rule-input-border)" in styles
-    assert "background-color: var(--studio-rule-input)" in styles
-    assert "-webkit-text-fill-color: var(--studio-rule-input-text)" in styles
+    assert "--studio-control-bg: #151923;" in styles
+    assert "--studio-control-border: #94A3B8;" in styles
+    assert "--studio-control-text: #F8FAFC;" in styles
+    assert "border: 1px solid var(--studio-control-border)" in styles
+    assert "background-color: var(--studio-control-bg)" in styles
+    assert "-webkit-text-fill-color: var(--studio-control-text)" in styles
+    assert '[data-testid="stTextInputRootElement"]' in styles
+    assert '[data-testid="stNumberInputContainer"]' in styles
+    assert '[data-testid="stTextAreaRootElement"]' in styles
     assert '[data-testid="stSelectbox"]' in styles
     assert '[data-testid="stSelectbox"] > div:last-child' in styles
     assert '[data-testid="stMultiSelect"] > div:last-child' in styles
-    assert '[data-baseweb="select"] {' in styles
-    assert "box-shadow: 0 0 0 1px var(--studio-rule-input-border)" in styles
+    assert '[data-testid="stDateInputField"]' in styles
+    assert '[data-testid="stTimeInputTimeDisplay"]' in styles
+    assert "box-shadow: 0 0 0 1px var(--studio-control-border)" in styles
     assert '[class*="st-key-rule_node_"]' in styles
     assert "padding-left: 1.5rem;" in styles
     assert '[class*="st-key-group_depth_0_"]' in styles
