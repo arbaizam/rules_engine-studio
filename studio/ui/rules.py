@@ -140,11 +140,14 @@ def _group(
         if not group.children:
             st.caption("Empty group — matches every row.")
 
-        for child in list(group.children):
-            if isinstance(child, ConditionGroup):
-                _group(child, group, columns, depth + 1)
-            else:
-                _condition(child, group, columns)
+        direct_conditions = [
+            child for child in group.children if not isinstance(child, ConditionGroup)
+        ]
+        nested_groups = [child for child in group.children if isinstance(child, ConditionGroup)]
+        for condition in direct_conditions:
+            _condition(condition, group, columns)
+        for nested_group in nested_groups:
+            _group(nested_group, group, columns, depth + 1)
 
 
 def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[str]) -> None:

@@ -33,6 +33,8 @@ def inject_styles() -> None:
             --studio-control-border-hover: #C4CFDD;
             --studio-control-text: #F8FAFC;
             --studio-border: #61718B;
+            --studio-section-border: #566780;
+            --studio-table-border: #718198;
             --studio-rule: #38BDF8;
             --studio-group: #A78BFA;
             --studio-condition: #F59E0B;
@@ -125,8 +127,29 @@ def inject_styles() -> None:
         }
 
         [data-testid="stVerticalBlockBorderWrapper"] {
-            border-color: #42506A !important;
+            border-color: var(--studio-section-border) !important;
+            border-width: 2px !important;
             background: var(--studio-panel);
+        }
+
+        [data-testid="stDataFrame"],
+        [data-testid="stDataEditor"] {
+            border: 2px solid var(--studio-table-border) !important;
+            border-radius: 0.65rem !important;
+            box-shadow: 0 0 0 1px rgba(113, 129, 152, 0.22) !important;
+        }
+
+        [data-testid="stExpander"] > details {
+            border-color: var(--studio-section-border) !important;
+            border-width: 2px !important;
+        }
+
+        [data-testid="stTabs"] [role="tablist"] {
+            border-bottom: 2px solid var(--studio-section-border) !important;
+        }
+
+        [data-testid="stDivider"] {
+            border-top: 2px solid var(--studio-section-border) !important;
         }
 
         [class*="st-key-rule_node_"] {
