@@ -128,6 +128,17 @@ def inject_styles() -> None:
             outline-offset: -1px;
         }
 
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"],
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] {
+            border-radius: 0.55rem !important;
+            box-shadow: 0 0 0 1px var(--studio-rule-input-border) !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+            background-color: var(--studio-rule-input) !important;
+        }
+
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] input::placeholder,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] input::placeholder,
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea::placeholder {
@@ -149,6 +160,11 @@ def inject_styles() -> None:
             border-color: #C4CFDD !important;
         }
 
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"]:hover,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"]:hover {
+            box-shadow: 0 0 0 1px #C4CFDD !important;
+        }
+
         [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
         [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:focus,
@@ -159,6 +175,11 @@ def inject_styles() -> None:
             border-color: #B8A7FF !important;
             outline-color: #A78BFA !important;
             box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.5) !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stSelectbox"] [data-baseweb="select"]:focus-within,
+        [class*="st-key-rule_node_"] [data-testid="stMultiSelect"] [data-baseweb="select"]:focus-within {
+            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.65) !important;
         }
 
         [class*="st-key-group_depth_"] {
