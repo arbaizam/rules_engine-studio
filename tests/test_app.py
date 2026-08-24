@@ -55,7 +55,9 @@ def test_app_styles_separate_root_groups_and_inputs_from_panels():
     styles = next(markdown.value for markdown in app.markdown if "<style>" in markdown.value)
     assert "--studio-input: #3A4B66;" in styles
     assert "--studio-input-border: #B7C4D8;" in styles
+    assert "--studio-rule-input-border: #E2E8F0;" in styles
     assert "border: 2px solid var(--studio-input-border)" in styles
+    assert "border: 2px solid var(--studio-rule-input-border)" in styles
     assert '[class*="st-key-rule_node_"]' in styles
     assert "padding-left: 1.5rem;" in styles
     assert '[class*="st-key-group_depth_0_"]' in styles

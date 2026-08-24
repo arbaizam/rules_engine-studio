@@ -32,6 +32,7 @@ def inject_styles() -> None:
             --studio-input-border: #B7C4D8;
             --studio-border: #61718B;
             --studio-rule: #38BDF8;
+            --studio-rule-input-border: #E2E8F0;
             --studio-group: #A78BFA;
             --studio-condition: #F59E0B;
             --studio-assignment: #34D399;
@@ -95,6 +96,26 @@ def inject_styles() -> None:
             border-left: 4px solid var(--studio-rule);
             box-sizing: border-box;
             padding-left: 1.5rem;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"],
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"],
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea {
+            border: 2px solid var(--studio-rule-input-border) !important;
+            box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.2) !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:hover,
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:hover,
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:hover {
+            border-color: #FFFFFF !important;
+        }
+
+        [class*="st-key-rule_node_"] [data-testid="stTextInput"] [data-baseweb="input"]:focus-within,
+        [class*="st-key-rule_node_"] [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
+        [class*="st-key-rule_node_"] [data-testid="stTextArea"] textarea:focus {
+            border-color: #F5F3FF !important;
+            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.75) !important;
         }
 
         [class*="st-key-group_depth_"] {
