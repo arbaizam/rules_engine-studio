@@ -15,7 +15,7 @@ _SORTER_DEFINITION = {
     "name": "studio_rule_sorter",
     "html": """
         <div class="studio-sorter" role="list" aria-label="Rule order"></div>
-        <p class="studio-sorter-help">Click and hold anywhere on a rule to drag it. Double-click to open it. Focus the grip and use the arrow keys for keyboard reordering.</p>
+        <p class="studio-sorter-help">Click or tap a rule to open it. Click and hold anywhere, then move to drag it. Focus the grip and use the arrow keys for keyboard reordering.</p>
     """,
     "css": """
         :host {
@@ -114,8 +114,24 @@ _SORTER_DEFINITION = {
         export default function ({ parentElement, data, setTriggerValue }) {
             const list = parentElement.querySelector(".studio-sorter");
             const items = Array.isArray(data?.items) ? data.items : [];
+            const renderSignature = JSON.stringify(
+                items.map((item) => ({
+                    uid: String(item.uid),
+                    label: String(item.label ?? item.uid),
+                    selected: Boolean(item.selected),
+                }))
+            );
+            const existingRows = list.querySelectorAll(".studio-sorter-item");
+            if (
+                list.dataset.renderSignature === renderSignature
+                && existingRows.length === items.length
+            ) {
+                return undefined;
+            }
+            list.dataset.renderSignature = renderSignature;
             const initialOrder = items.map((item) => String(item.uid));
             let dragElement = null;
+            let dropped = false;
 
             const order = () =>
                 Array.from(list.querySelectorAll(".studio-sorter-item"))
@@ -168,9 +184,11 @@ _SORTER_DEFINITION = {
                 let pointerId = null;
                 let pointerDragging = false;
                 let pointerStartY = 0;
+                let ignoreNextClick = false;
                 const row = document.createElement("div");
                 row.className = `studio-sorter-item${selected ? " selected" : ""}`;
                 row.dataset.uid = uid;
+                row.draggable = true;
                 row.setAttribute("role", "listitem");
                 row.setAttribute("aria-current", selected ? "true" : "false");
                 row.tabIndex = 0;
@@ -188,18 +206,35 @@ _SORTER_DEFINITION = {
                 row.append(handle, text);
                 list.appendChild(row);
 
-                row.ondblclick = (event) => {
-                    event.preventDefault();
-                    setTriggerValue("select", uid);
+                row.onclick = () => {
+                    if (ignoreNextClick) {
+                        ignoreNextClick = false;
+                        return;
+                    }
+                    if (!selected) setTriggerValue("select", uid);
                 };
                 row.onkeydown = (event) => {
                     if (event.target !== row || event.key !== "Enter") return;
                     event.preventDefault();
-                    setTriggerValue("select", uid);
+                    if (!selected) setTriggerValue("select", uid);
+                };
+
+                row.ondragstart = (event) => {
+                    dropped = false;
+                    dragElement = row;
+                    row.classList.add("dragging");
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", uid);
+                };
+                row.ondragend = () => {
+                    row.classList.remove("dragging");
+                    if (!dropped) restoreOrder();
+                    dragElement = null;
+                    dropped = false;
                 };
 
                 row.onpointerdown = (event) => {
-                    if (event.pointerType === "mouse" && event.button !== 0) return;
+                    if (event.pointerType === "mouse") return;
                     pointerId = event.pointerId;
                     pointerDragging = false;
                     pointerStartY = event.clientY;
@@ -218,7 +253,9 @@ _SORTER_DEFINITION = {
                 };
                 row.onpointerup = (event) => {
                     if (event.pointerId === pointerId) {
+                        ignoreNextClick = true;
                         if (pointerDragging) finishPointerDrag(true);
+                        else if (!selected) setTriggerValue("select", uid);
                         pointerDragging = false;
                         pointerId = null;
                     }
@@ -230,6 +267,11 @@ _SORTER_DEFINITION = {
                     pointerId = null;
                 };
                 handle.onkeydown = (event) => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        if (!selected) setTriggerValue("select", uid);
+                        return;
+                    }
                     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
                     event.preventDefault();
                     const sibling = event.key === "ArrowUp"
@@ -242,20 +284,50 @@ _SORTER_DEFINITION = {
                 };
             });
 
+            list.ondragover = (event) => {
+                if (!dragElement) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                moveAt(event.clientY);
+            };
+            list.ondrop = (event) => {
+                if (!dragElement) return;
+                event.preventDefault();
+                dropped = true;
+                dragElement.classList.remove("dragging");
+                emitOrder();
+                dragElement = null;
+            };
+
             return undefined;
         }
     """,
 }
 
+_SORTER = None
+_SORTER_RUNTIME = None
+
+
+def _sorter_component():
+    """Register the sorter once for each Streamlit runtime."""
+    from streamlit.runtime import Runtime
+
+    global _SORTER, _SORTER_RUNTIME
+    runtime = Runtime.instance()
+    if _SORTER is None or _SORTER_RUNTIME is not runtime:
+        _SORTER = st.components.v2.component(**_SORTER_DEFINITION)
+        _SORTER_RUNTIME = runtime
+    return _SORTER
+
 
 def _apply_drag_order() -> None:
-    """Apply the transient order emitted by the v2 component."""
+    """Apply an emitted order before the event-triggered app redraw."""
     component_state = st.session_state.get(_COMPONENT_KEY, {})
     requested = component_state.get("order") if component_state else None
     if not isinstance(requested, Sequence) or isinstance(requested, (str, bytes)):
         return
     normalized = tuple(str(uid) for uid in requested)
-    state.queue(lambda order=normalized: state.reorder_rules(order))
+    state.reorder_rules(normalized)
 
 
 def _apply_rule_selection() -> None:
@@ -264,13 +336,16 @@ def _apply_rule_selection() -> None:
     requested = component_state.get("select") if component_state else None
     if not isinstance(requested, str):
         return
+    selected = state.selected_rule()
+    if selected is not None and selected.uid == requested:
+        return
     if any(rule.uid == requested for rule in state.draft().rules):
         state.select_rule(requested)
 
 
 def render_drag_sorter(rules: Sequence[Rule], selected_uid: str | None) -> None:
     """Render the integrated sortable list for the supplied ordered rules."""
-    sorter = st.components.v2.component(**_SORTER_DEFINITION)
+    sorter = _sorter_component()
     sorter(
         data={
             "items": [

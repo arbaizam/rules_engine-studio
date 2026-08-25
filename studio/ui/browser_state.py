@@ -68,6 +68,21 @@ _BRIDGE_DEFINITION = {
     """,
 }
 
+_BRIDGE = None
+_BRIDGE_RUNTIME = None
+
+
+def _bridge_component():
+    """Register the autosave bridge once for each Streamlit runtime."""
+    from streamlit.runtime import Runtime
+
+    global _BRIDGE, _BRIDGE_RUNTIME
+    runtime = Runtime.instance()
+    if _BRIDGE is None or _BRIDGE_RUNTIME is not runtime:
+        _BRIDGE = st.components.v2.component(**_BRIDGE_DEFINITION)
+        _BRIDGE_RUNTIME = runtime
+    return _BRIDGE
+
 
 def _pack(value: Any) -> Any:
     """Convert authored values and dataframe scalars into strict JSON data."""
@@ -203,7 +218,7 @@ def render() -> None:
             payload = snapshot_json()
         except ValueError as exc:
             st.caption(str(exc))
-    bridge = st.components.v2.component(**_BRIDGE_DEFINITION)
+    bridge = _bridge_component()
     bridge(
         data={
             "mode": "save" if checked else "restore",

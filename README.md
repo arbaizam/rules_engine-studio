@@ -12,7 +12,7 @@ and evaluation.
 ## Capabilities
 
 - Author ordered rules with nested `all` / `any` groups.
-- Navigate and reorder rules in one list: double-click or press Enter to open;
+- Navigate and reorder rules in one list: click, tap, or press Enter to open;
   drag, use the arrow keys, or use the always-available move buttons to reorder.
 - Recover the in-progress ruleset and sample rows from browser-local autosave
   after a reload or deployment restart.

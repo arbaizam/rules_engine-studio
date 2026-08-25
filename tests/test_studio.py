@@ -486,6 +486,34 @@ def test_sorter_selection_opens_the_emitted_rule(monkeypatch):
     assert state.selected_rule().uid == target.uid
 
 
+def test_sorter_reorder_commits_before_the_event_redraw(monkeypatch):
+    """A drag callback must not render the old order before applying the new one."""
+    draft = sample_data.demo_ruleset()
+    requested = [rule.uid for rule in reversed(draft.ordered_rules())]
+    session = {
+        state.DRAFT: draft,
+        state.SELECTED: draft.ordered_rules()[0].uid,
+        state.ACTIONS: [],
+        reorder._COMPONENT_KEY: {"order": requested},
+    }
+    monkeypatch.setattr(st, "session_state", session)
+
+    reorder._apply_drag_order()
+
+    assert [rule.uid for rule in draft.ordered_rules()] == requested
+    assert session[state.ACTIONS] == []
+
+
+def test_sorter_renderer_preserves_rows_between_identical_renders():
+    """Layout updates must not replace a row in the middle of a pointer gesture."""
+    source = reorder._SORTER_DEFINITION["js"]
+
+    assert "list.dataset.renderSignature === renderSignature" in source
+    assert "existingRows.length === items.length" in source
+    assert "row.draggable = true" in source
+    assert 'if (event.pointerType === "mouse") return' in source
+
+
 def test_yaml_round_trip_uses_canonical_compiler_and_exporter():
     """Exported YAML must round-trip without a parallel studio dialect."""
     draft = sample_data.demo_ruleset()
