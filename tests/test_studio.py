@@ -16,7 +16,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from studio import authoring, custom_functions, engine, sample_data, state, yaml_io
+from studio import authoring, custom_functions, engine, expressions, sample_data, state, yaml_io
 from studio.schema import (
     LITERAL_TYPES,
     LOGIC_MODES,
@@ -114,6 +114,116 @@ def ruleset(*rules: Rule) -> Ruleset:
 def assignment(assignment_id: str, target: str, value: Operand) -> Assignment:
     """Return one assignment with an explicit ruleset-unique identifier."""
     return Assignment(assignment_id=assignment_id, target_field=target, value=value)
+
+
+def test_operand_expressions_cover_sources_fallbacks_functions_and_incomplete_fields():
+    """Operand previews must explain every authoring source without evaluating it."""
+    source = field("CurrentFICO", default=0)
+    function = Operand(
+        kind="custom_function",
+        function="coalesce",
+        args={"values": [field("CurrentFICO"), assigned("fico_band"), literal("")]},
+    )
+
+    assert expressions.operand_expression(source) == (
+        'input field "CurrentFICO" (use 0 when null)'
+    )
+    assert expressions.operand_expression(function) == (
+        'coalesce(values = [input field "CurrentFICO", '
+        'prior assignment "fico_band", empty text ("")])'
+    )
+    assert expressions.operand_expression(Operand(kind="field")) == "[choose an input field]"
+    assert expressions.operand_expression(Operand(kind="custom_function")) == (
+        "[choose a function]"
+    )
+    assert expressions.operand_expression(literal("1.20", "decimal")) == "1.20"
+    assert expressions.operand_expression(literal("2026-08-25", "date")) == (
+        'date "2026-08-25"'
+    )
+    assert expressions.operand_expression(literal("", "decimal")) == "[enter a number]"
+
+
+def test_condition_expressions_include_operator_options_and_active_status():
+    """Condition previews must surface behavior that changes comparison semantics."""
+    draft = Condition(
+        left=field("CurrentFICO"),
+        operator="ge",
+        right=literal(620, "integer"),
+        tolerance_abs=Decimal(5),
+        error_on_null=True,
+        active_flag=False,
+    )
+
+    assert expressions.condition_expression(draft) == (
+        'Ignored because this condition is inactive: input field "CurrentFICO" '
+        "is at least 620 (absolute tolerance 5); raise an error when an operand is null"
+    )
+    assert expressions.condition_expression(
+        Condition(left=field("ReviewStatus"), operator="is_null", right=None)
+    ) == 'input field "ReviewStatus" is null'
+
+
+def test_group_expressions_preserve_nested_all_any_structure():
+    """Group previews must make boolean ownership and nesting unambiguous."""
+    draft = ConditionGroup(
+        logical_operator="all",
+        children=[
+            Condition(left=field("CurrentFICO"), operator="ge", right=literal(620)),
+            ConditionGroup(
+                logical_operator="any",
+                children=[
+                    Condition(left=field("CurrentDSCR"), operator="ge", right=literal(1.2)),
+                    Condition(
+                        left=field("ManualReview"),
+                        operator="eq",
+                        right=literal(True),
+                        active_flag=False,
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    assert expressions.group_expression(draft) == "\n".join(
+        [
+            "All of the following must be true:",
+            '  • input field "CurrentFICO" is at least 620',
+            "  • Any of the following must be true:",
+            '    • input field "CurrentDSCR" is at least 1.2',
+            "    • Ignored because this condition is inactive: "
+            'input field "ManualReview" equals true',
+        ]
+    )
+    assert expressions.group_expression(ConditionGroup()) == (
+        "Always matches because this group has no conditions."
+    )
+
+
+def test_rule_expressions_compose_conditions_assignments_and_match_behavior():
+    """Rule previews must summarize the same IF/THEN model exported to the engine."""
+    draft = Rule(
+        active_flag=False,
+        stop_on_match=True,
+        conditions=ConditionGroup(
+            children=[Condition(left=field("eligible"), operator="eq", right=literal(True))]
+        ),
+        assignments=[
+            Assignment(target_field="ReviewStatus", value=literal("Approved")),
+        ],
+    )
+
+    assert expressions.rule_expression(draft) == "\n".join(
+        [
+            "This rule is inactive and will be skipped.",
+            "IF",
+            "  All of the following must be true:",
+            '    • input field "eligible" equals true',
+            "THEN",
+            '  • Set output field "ReviewStatus" to "Approved".',
+            "After a match, stop before evaluating later rules.",
+        ]
+    )
+    assert "[add an assignment]" in expressions.rule_expression(Rule())
 
 
 def test_dependency_pin_targets_authoring_contract_commit():

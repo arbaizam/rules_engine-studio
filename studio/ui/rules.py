@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
+from html import escape
 from typing import Any
 
 import streamlit as st
 
-from .. import engine, state
+from .. import engine, expressions, state
 from ..schema import (
     OPERATOR_NAMES,
     OPERATORS_BY_NAME,
@@ -40,10 +41,17 @@ def render() -> None:
             unsafe_allow_html=True,
         )
         _header(rule)
+        rule_expression_slot = st.empty()
         st.divider()
         _conditions(rule, columns)
         st.divider()
         _assignments(rule, columns)
+        with rule_expression_slot.container():
+            _expression_expander(
+                f"Rule expression · {rule.rule_name or rule.rule_id or 'Untitled'}",
+                "Complete rule",
+                expressions.rule_expression(rule),
+            )
         st.divider()
         _try_it(rule)
 
@@ -137,6 +145,7 @@ def _group(
         if parent is not None and head[4].button("Remove group", key=f"gdel-{group.uid}"):
             state.queue(lambda p=parent, g=group: p.children.remove(g))
 
+        group_expression_slot = st.empty()
         if not group.children:
             st.caption("Empty group — matches every row.")
 
@@ -148,6 +157,12 @@ def _group(
             _condition(condition, group, columns)
         for nested_group in nested_groups:
             _group(nested_group, group, columns, depth + 1)
+        with group_expression_slot.container():
+            _expression_expander(
+                f"Group expression · {group.condition_group_id or 'Untitled group'}",
+                "Matches when",
+                expressions.group_expression(group),
+            )
 
 
 def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[str]) -> None:
@@ -227,6 +242,27 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
             st.markdown("&nbsp;", unsafe_allow_html=True)
             if st.button("Remove", key=f"cdel-{condition.uid}"):
                 state.queue(lambda p=parent, c=condition: p.children.remove(c))
+
+        _expression_card("Condition expression", expressions.condition_expression(condition))
+
+
+def _expression_expander(label: str, heading: str, expression: str) -> None:
+    """Render a collapsible expression without making it an editing control."""
+    with st.expander(label, expanded=False):
+        _expression_card(heading, expression)
+
+
+def _expression_card(heading: str, expression: str) -> None:
+    """Render escaped, whitespace-preserving human-readable expression text."""
+    st.markdown(
+        (
+            '<div class="studio-expression-preview">'
+            f'<div class="studio-expression-label">{escape(heading)}</div>'
+            f'<div class="studio-expression-text">{escape(expression)}</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 # --------------------------------------------------------------------------

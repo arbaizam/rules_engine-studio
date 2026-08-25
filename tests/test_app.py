@@ -114,3 +114,32 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert "margin-left: 0;" in styles
     assert ".studio-rule-label {" in styles
     assert "margin-bottom: 1rem;" in styles
+
+
+def test_expression_previews_render_and_follow_condition_edits():
+    """Condition, group, and rule previews must render from the live draft model."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+    next(button for button in app.button if button.label.startswith("10")).click()
+    app.run()
+
+    assert not app.exception
+    labels = [expander.label for expander in app.expander]
+    assert any(label.startswith("Rule expression ·") for label in labels)
+    assert any(label.startswith("Group expression ·") for label in labels)
+    assert any(
+        'studio-expression-label">Condition expression' in markdown.value
+        for markdown in app.markdown
+    )
+
+    rule = next(rule for rule in app.session_state["draft_ruleset"].rules if rule.rule_order == 10)
+    condition = next(rule.conditions.walk_conditions())
+    next(selectbox for selectbox in app.selectbox if selectbox.key == f"cop-{condition.uid}").select(
+        "lt"
+    )
+    app.run()
+
+    assert not app.exception
+    assert any(
+        "Condition expression" in markdown.value and "is less than" in markdown.value
+        for markdown in app.markdown
+    )

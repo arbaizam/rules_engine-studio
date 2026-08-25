@@ -95,6 +95,7 @@ def inject_styles() -> None:
             --studio-group: #A78BFA;
             --studio-condition: #F59E0B;
             --studio-assignment: #34D399;
+            --studio-expression: #93C5FD;
         }
 
         [data-testid="stSidebar"] {
@@ -256,6 +257,32 @@ def inject_styles() -> None:
 
         .studio-rule-label {
             margin-bottom: 1rem;
+        }
+
+        .studio-expression-preview {
+            background: rgba(30, 41, 59, 0.72);
+            border: 1px solid #64748B;
+            border-left: 3px solid var(--studio-expression);
+            border-radius: 0.5rem;
+            margin: 0.35rem 0 0.15rem;
+            padding: 0.65rem 0.8rem;
+        }
+
+        .studio-expression-label {
+            color: #BFDBFE;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            margin-bottom: 0.3rem;
+            text-transform: uppercase;
+        }
+
+        .studio-expression-text {
+            color: #F8FAFC;
+            font-size: 0.9rem;
+            line-height: 1.55;
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
         }
         </style>
         """,
