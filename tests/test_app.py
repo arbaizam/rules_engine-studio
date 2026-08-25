@@ -114,6 +114,8 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert "margin-left: 0;" in styles
     assert ".studio-rule-label {" in styles
     assert "margin-bottom: 1rem;" in styles
+    assert '[class*="st-key-expression_"]' in styles
+    assert "margin: 0.35rem 0 0.75rem;" in styles
 
 
 def test_expression_previews_render_and_follow_condition_edits():
@@ -126,20 +128,27 @@ def test_expression_previews_render_and_follow_condition_edits():
     labels = [expander.label for expander in app.expander]
     assert any(label.startswith("Rule expression ·") for label in labels)
     assert any(label.startswith("Group expression ·") for label in labels)
+    assert any(label.startswith("Condition expression ·") for label in labels)
+    assert any(label.startswith("Assignment expression ·") for label in labels)
+    assert all(
+        expander.proto.expanded is False
+        for expander in app.expander
+        if " expression ·" in expander.label
+    )
     assert any(
-        'studio-expression-label">Condition expression' in markdown.value
+        'studio-expression-label">Matches when' in markdown.value
         for markdown in app.markdown
     )
 
     rule = next(rule for rule in app.session_state["draft_ruleset"].rules if rule.rule_order == 10)
     condition = next(rule.conditions.walk_conditions())
     next(selectbox for selectbox in app.selectbox if selectbox.key == f"cop-{condition.uid}").select(
-        "lt"
+        "ge"
     )
     app.run()
 
     assert not app.exception
     assert any(
-        "Condition expression" in markdown.value and "is less than" in markdown.value
+        "studio-expression-text" in markdown.value and "is at least" in markdown.value
         for markdown in app.markdown
     )

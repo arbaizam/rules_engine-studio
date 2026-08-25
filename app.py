@@ -284,6 +284,10 @@ def inject_styles() -> None:
             overflow-wrap: anywhere;
             white-space: pre-wrap;
         }
+
+        [class*="st-key-expression_"] {
+            margin: 0.35rem 0 0.75rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,

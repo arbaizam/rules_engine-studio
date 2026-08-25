@@ -51,6 +51,7 @@ def render() -> None:
                 f"Rule expression · {rule.rule_name or rule.rule_id or 'Untitled'}",
                 "Complete rule",
                 expressions.rule_expression(rule),
+                key=f"rule_{rule.uid}",
             )
         st.divider()
         _try_it(rule)
@@ -162,6 +163,7 @@ def _group(
                 f"Group expression · {group.condition_group_id or 'Untitled group'}",
                 "Matches when",
                 expressions.group_expression(group),
+                key=f"group_{group.uid}",
             )
 
 
@@ -243,13 +245,19 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
             if st.button("Remove", key=f"cdel-{condition.uid}"):
                 state.queue(lambda p=parent, c=condition: p.children.remove(c))
 
-        _expression_card("Condition expression", expressions.condition_expression(condition))
+        _expression_expander(
+            f"Condition expression · {condition.condition_id or 'Untitled condition'}",
+            "Matches when",
+            expressions.condition_expression(condition),
+            key=f"condition_{condition.uid}",
+        )
 
 
-def _expression_expander(label: str, heading: str, expression: str) -> None:
+def _expression_expander(label: str, heading: str, expression: str, *, key: str) -> None:
     """Render a collapsible expression without making it an editing control."""
-    with st.expander(label, expanded=False):
-        _expression_card(heading, expression)
+    with st.container(key=f"expression_{key}"):
+        with st.expander(label, expanded=False):
+            _expression_card(heading, expression)
 
 
 def _expression_card(heading: str, expression: str) -> None:
@@ -313,6 +321,14 @@ def _assignments(rule: Rule, columns: Sequence[str]) -> None:
                 st.markdown("&nbsp;", unsafe_allow_html=True)
                 if st.button("Remove", key=f"adel-{assignment.uid}"):
                     state.queue(lambda r=rule, a=assignment: r.assignments.remove(a))
+
+            _expression_expander(
+                f"Assignment expression · "
+                f"{assignment.assignment_id or 'Untitled assignment'}",
+                "Sets on match",
+                expressions.assignment_expression(assignment),
+                key=f"assignment_{assignment.uid}",
+            )
 
     if st.button("Add assignment", key=f"aadd-{rule.uid}"):
         state.queue(lambda r=rule: r.assignments.append(Assignment(value=Operand())))
