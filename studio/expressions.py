@@ -131,8 +131,12 @@ def _group_lines(group: ConditionGroup, depth: int) -> list[str]:
     if not group.children:
         return [f"{prefix}Always matches because this group has no conditions."]
 
-    mode = "All" if group.logical_operator == "all" else "Any"
-    lines = [f"{prefix}{mode} of the following must be true:"]
+    requirement = (
+        "All of the following must be true:"
+        if group.logical_operator == "all"
+        else "Any of the following are true:"
+    )
+    lines = [f"{prefix}{requirement}"]
     for child in group.children:
         if isinstance(child, ConditionGroup):
             nested = _group_lines(child, depth + 1)

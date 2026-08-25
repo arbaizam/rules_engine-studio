@@ -188,7 +188,7 @@ def test_group_expressions_preserve_nested_all_any_structure():
         [
             "All of the following must be true:",
             '  • input field "CurrentFICO" is at least 620',
-            "  • Any of the following must be true:",
+            "  • Any of the following are true:",
             '    • input field "CurrentDSCR" is at least 1.2',
             "    • Ignored because this condition is inactive: "
             'input field "ManualReview" equals true',
