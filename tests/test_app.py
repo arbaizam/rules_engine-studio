@@ -10,7 +10,15 @@ from pathlib import Path
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
+from studio import state
 from studio.schema import Condition, ConditionGroup
+
+
+def select_rule(app: AppTest, rule_order: int) -> None:
+    """Select a draft rule without depending on the browser-only component."""
+    rule = next(rule for rule in app.session_state[state.DRAFT].rules if rule.rule_order == rule_order)
+    app.session_state[state.SELECTED] = rule.uid
+    app.run()
 
 
 def test_app_renders_all_function_contracts_and_upload_controls():
@@ -18,12 +26,9 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
     reorder = next(expander for expander in app.expander if expander.label == "Reorder rules")
-    assert reorder.proto.expanded is False
+    assert reorder.proto.expanded is True
     assert any(button.label == "Move down" for button in reorder.button)
-
-    eligibility_rule = next(button for button in app.button if button.label.startswith("10"))
-    eligibility_rule.click()
-    app.run()
+    assert not any(" · " in button.label and button.label[:1].isdigit() for button in app.button)
 
     assert not app.exception
     function = next(selectbox for selectbox in app.selectbox if selectbox.value == "coalesce")
@@ -59,8 +64,7 @@ def test_native_rule_reorder_preserves_the_project_and_sample_rows():
 def test_app_renders_nested_literal_audit_and_hierarchy_controls():
     """The rendered authoring surface exposes structured literals and full audit."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
-    next(button for button in app.button if button.label.startswith("20")).click()
-    app.run()
+    select_rule(app, 20)
 
     assert not app.exception
     literal_types = {
@@ -73,16 +77,14 @@ def test_app_renders_nested_literal_audit_and_hierarchy_controls():
     )
     assert any(markdown.value == "#### Full audit" for markdown in app.markdown)
 
-    next(button for button in app.button if button.label.startswith("30")).click()
-    app.run()
+    select_rule(app, 30)
     assert any("Nested group" in markdown.value for markdown in app.markdown)
 
 
 def test_root_group_renders_direct_tests_before_nested_groups():
     """Root-level tests render before child groups without changing ownership."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
-    next(button for button in app.button if button.label.startswith("30")).click()
-    app.run()
+    select_rule(app, 30)
 
     rule = next(rule for rule in app.session_state["draft_ruleset"].rules if rule.rule_order == 30)
     root = rule.conditions
@@ -171,8 +173,6 @@ def test_sidebar_rule_labels_do_not_use_a_stop_on_match_glyph():
 def test_expression_previews_render_and_follow_condition_edits():
     """Condition, group, and rule previews must render from the live draft model."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
-    next(button for button in app.button if button.label.startswith("10")).click()
-    app.run()
 
     assert not app.exception
     labels = [expander.label for expander in app.expander]

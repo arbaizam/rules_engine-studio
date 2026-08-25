@@ -307,27 +307,13 @@ def sidebar() -> None:
 
         if not ordered:
             st.caption("None yet.")
-        for rule in ordered:
-            selected = rule.uid == st.session_state.get(state.SELECTED)
-            label = f"{rule.rule_order} · {rule.rule_id or 'untitled'}"
-            if not rule.active_flag:
-                label += "  (off)"
-            if st.button(
-                label,
-                key=f"pick-{rule.uid}",
-                width="stretch",
-                type="primary" if selected else "secondary",
-            ):
-                state.select_rule(rule.uid)
-                st.rerun()
-
         current = state.selected_rule()
-        if len(ordered) > 1 and current is not None:
+        if ordered and current is not None:
             current_index = next(
                 index for index, rule in enumerate(ordered) if rule.uid == current.uid
             )
-            with st.expander("Reorder rules", expanded=False):
-                reorder.render_drag_sorter(ordered)
+            with st.expander("Reorder rules", expanded=True):
+                reorder.render_drag_sorter(ordered, current.uid)
                 st.caption(
                     f"Or move the selected rule: {current.rule_order} · "
                     f"{current.rule_id or 'untitled'}"
@@ -337,14 +323,14 @@ def sidebar() -> None:
                     "Move up",
                     key=f"reorder-up-{current.uid}",
                     width="stretch",
-                    disabled=current_index == 0,
+                    disabled=len(ordered) == 1 or current_index == 0,
                 ):
                     state.queue(lambda uid=current.uid: state.move_rule(uid, -1))
                 if move[1].button(
                     "Move down",
                     key=f"reorder-down-{current.uid}",
                     width="stretch",
-                    disabled=current_index == len(ordered) - 1,
+                    disabled=len(ordered) == 1 or current_index == len(ordered) - 1,
                 ):
                     state.queue(lambda uid=current.uid: state.move_rule(uid, 1))
 

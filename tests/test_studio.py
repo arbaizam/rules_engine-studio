@@ -37,7 +37,7 @@ from studio.schema import (
     normalize_literal_editor_type,
     referenced_columns,
 )
-from studio.ui import browser_state
+from studio.ui import browser_state, reorder
 
 
 def field(name: str, *, default: object | None = None) -> Operand:
@@ -468,6 +468,22 @@ def test_drag_reorder_preserves_rule_order_slots(monkeypatch):
     assert state.reorder_rules(requested_uids)
     assert [rule.uid for rule in draft.ordered_rules()] == requested_uids
     assert [rule.rule_order for rule in draft.ordered_rules()] == original_orders
+
+
+def test_sorter_selection_opens_the_emitted_rule(monkeypatch):
+    """The integrated list selects only a rule that belongs to the current draft."""
+    draft = sample_data.demo_ruleset()
+    target = draft.ordered_rules()[2]
+    session = {
+        state.DRAFT: draft,
+        state.SELECTED: draft.ordered_rules()[0].uid,
+        reorder._COMPONENT_KEY: {"select": target.uid},
+    }
+    monkeypatch.setattr(st, "session_state", session)
+
+    reorder._apply_rule_selection()
+
+    assert state.selected_rule().uid == target.uid
 
 
 def test_yaml_round_trip_uses_canonical_compiler_and_exporter():

@@ -15,7 +15,7 @@ _SORTER_DEFINITION = {
     "name": "studio_rule_sorter",
     "html": """
         <div class="studio-sorter" role="list" aria-label="Rule order"></div>
-        <p class="studio-sorter-help">Drag the handle or focus it and use the arrow keys.</p>
+        <p class="studio-sorter-help">Click and hold anywhere on a rule to drag it. Double-click to open it. Focus the grip and use the arrow keys for keyboard reordering.</p>
     """,
     "css": """
         :host {
@@ -36,13 +36,16 @@ _SORTER_DEFINITION = {
             border: 2px solid #52758F;
             border-radius: 0.55rem;
             color: #F8FAFC;
+            cursor: grab;
             display: grid;
             font: inherit;
             gap: 0.55rem;
             grid-template-columns: 2rem minmax(0, 1fr);
             min-height: 2.8rem;
             padding: 0.4rem 0.65rem 0.4rem 0.4rem;
+            touch-action: none;
             transition: border-color 120ms ease, opacity 120ms ease, transform 120ms ease;
+            user-select: none;
         }
 
         .studio-sorter-item:hover,
@@ -54,6 +57,16 @@ _SORTER_DEFINITION = {
             border-color: #AAAD00;
             opacity: 0.72;
             transform: scale(0.99);
+        }
+
+        .studio-sorter-item:active {
+            cursor: grabbing;
+        }
+
+        .studio-sorter-item.selected {
+            background: #0B4057;
+            border-color: #058AA8;
+            box-shadow: inset 4px 0 0 #AAAD00;
         }
 
         .studio-sorter-handle {
@@ -103,7 +116,6 @@ _SORTER_DEFINITION = {
             const items = Array.isArray(data?.items) ? data.items : [];
             const initialOrder = items.map((item) => String(item.uid));
             let dragElement = null;
-            let dropped = false;
 
             const order = () =>
                 Array.from(list.querySelectorAll(".studio-sorter-item"))
@@ -152,12 +164,16 @@ _SORTER_DEFINITION = {
             items.forEach((item) => {
                 const uid = String(item.uid);
                 const label = String(item.label ?? uid);
+                const selected = Boolean(item.selected);
                 let pointerId = null;
+                let pointerDragging = false;
+                let pointerStartY = 0;
                 const row = document.createElement("div");
-                row.className = "studio-sorter-item";
+                row.className = `studio-sorter-item${selected ? " selected" : ""}`;
                 row.dataset.uid = uid;
-                row.draggable = true;
                 row.setAttribute("role", "listitem");
+                row.setAttribute("aria-current", selected ? "true" : "false");
+                row.tabIndex = 0;
 
                 const handle = document.createElement("button");
                 handle.className = "studio-sorter-handle";
@@ -172,40 +188,45 @@ _SORTER_DEFINITION = {
                 row.append(handle, text);
                 list.appendChild(row);
 
-                row.ondragstart = (event) => {
-                    dragElement = row;
-                    dropped = false;
-                    row.classList.add("dragging");
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", uid);
+                row.ondblclick = (event) => {
+                    event.preventDefault();
+                    setTriggerValue("select", uid);
                 };
-                row.ondragend = () => {
-                    row.classList.remove("dragging");
-                    if (!dropped) restoreOrder();
-                    dragElement = null;
+                row.onkeydown = (event) => {
+                    if (event.target !== row || event.key !== "Enter") return;
+                    event.preventDefault();
+                    setTriggerValue("select", uid);
                 };
 
-                handle.onpointerdown = (event) => {
+                row.onpointerdown = (event) => {
                     if (event.pointerType === "mouse" && event.button !== 0) return;
-                    event.preventDefault();
-                    dragElement = row;
-                    row.classList.add("dragging");
                     pointerId = event.pointerId;
-                    handle.setPointerCapture(event.pointerId);
+                    pointerDragging = false;
+                    pointerStartY = event.clientY;
+                    row.setPointerCapture(event.pointerId);
                 };
-                handle.onpointermove = (event) => {
-                    if (!dragElement || event.pointerId !== pointerId) return;
+                row.onpointermove = (event) => {
+                    if (event.pointerId !== pointerId) return;
+                    if (!pointerDragging && Math.abs(event.clientY - pointerStartY) >= 6) {
+                        pointerDragging = true;
+                        dragElement = row;
+                        row.classList.add("dragging");
+                    }
+                    if (!pointerDragging) return;
                     event.preventDefault();
                     moveAt(event.clientY);
                 };
-                handle.onpointerup = (event) => {
+                row.onpointerup = (event) => {
                     if (event.pointerId === pointerId) {
-                        finishPointerDrag(true);
+                        if (pointerDragging) finishPointerDrag(true);
+                        pointerDragging = false;
                         pointerId = null;
                     }
                 };
-                handle.onpointercancel = () => {
-                    finishPointerDrag(false);
+                row.onpointercancel = (event) => {
+                    if (event.pointerId !== pointerId) return;
+                    if (pointerDragging) finishPointerDrag(false);
+                    pointerDragging = false;
                     pointerId = null;
                 };
                 handle.onkeydown = (event) => {
@@ -221,25 +242,7 @@ _SORTER_DEFINITION = {
                 };
             });
 
-            list.ondragover = (event) => {
-                if (!dragElement) return;
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "move";
-                moveAt(event.clientY);
-            };
-            list.ondrop = (event) => {
-                if (!dragElement) return;
-                event.preventDefault();
-                dropped = true;
-                dragElement.classList.remove("dragging");
-                emitOrder();
-                dragElement = null;
-            };
-
-            return () => {
-                list.ondragover = null;
-                list.ondrop = null;
-            };
+            return undefined;
         }
     """,
 }
@@ -255,7 +258,17 @@ def _apply_drag_order() -> None:
     state.queue(lambda order=normalized: state.reorder_rules(order))
 
 
-def render_drag_sorter(rules: Sequence[Rule]) -> None:
+def _apply_rule_selection() -> None:
+    """Open the rule emitted by a double-click or keyboard selection."""
+    component_state = st.session_state.get(_COMPONENT_KEY, {})
+    requested = component_state.get("select") if component_state else None
+    if not isinstance(requested, str):
+        return
+    if any(rule.uid == requested for rule in state.draft().rules):
+        state.select_rule(requested)
+
+
+def render_drag_sorter(rules: Sequence[Rule], selected_uid: str | None) -> None:
     """Render the integrated sortable list for the supplied ordered rules."""
     sorter = st.components.v2.component(**_SORTER_DEFINITION)
     sorter(
@@ -267,12 +280,14 @@ def render_drag_sorter(rules: Sequence[Rule]) -> None:
                         f"{rule.rule_order} · {rule.rule_id or 'untitled'}"
                         f" — {rule.rule_name or 'Unnamed rule'}"
                     ),
+                    "selected": rule.uid == selected_uid,
                 }
                 for rule in rules
             ]
         },
         key=_COMPONENT_KEY,
         on_order_change=_apply_drag_order,
+        on_select_change=_apply_rule_selection,
         width="stretch",
         height="content",
     )

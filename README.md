@@ -12,7 +12,8 @@ and evaluation.
 ## Capabilities
 
 - Author ordered rules with nested `all` / `any` groups.
-- Reorder rules by drag, keyboard, or the always-available move buttons.
+- Navigate and reorder rules in one list: double-click or press Enter to open;
+  drag, use the arrow keys, or use the always-available move buttons to reorder.
 - Recover the in-progress ruleset and sample rows from browser-local autosave
   after a reload or deployment restart.
 - Configure all canonical operands: `field`, `assigned`, `literal`, and
