@@ -5,7 +5,9 @@ Streamlit authoring and test surface for the canonical
 
 The studio edits mutable drafts, but it does not maintain its own rule dialect.
 Every validation, YAML import/export, custom-function contract, and row test is
-delegated to the pinned production package.
+delegated to the pinned production package. Editor choices are built from the
+engine-owned authoring manifest using the same function registry as validation
+and evaluation.
 
 ## Capabilities
 
@@ -38,9 +40,10 @@ session; evaluated CSV and canonical YAML are explicit downloads.
 
 | Path | Responsibility |
 |---|---|
-| `studio/schema.py` | Mutable mirror of the canonical authoring contract |
-| `studio/custom_functions.py` | Production registry and all standard functions |
-| `studio/engine.py` | Compiler and `SparkRowEvaluator` adapter |
+| `studio/authoring.py` | Cached engine manifest, shared registry, compiler, and semantic validator adapter |
+| `studio/schema.py` | Mutable draft models plus Studio-owned labels and widget state |
+| `studio/custom_functions.py` | Manifest-backed function metadata and runtime calls |
+| `studio/engine.py` | `SparkRowEvaluator` adapter |
 | `studio/yaml_io.py` | Production compiler, exporter, and validator adapter |
 | `studio/ui/` | Streamlit authoring and test views |
 | `studio/sample_data.py` | Valid starter ruleset and representative rows |
@@ -48,3 +51,6 @@ session; evaluated CSV and canonical YAML are explicit downloads.
 
 The exact `rules_engine` commit used by local and Streamlit Cloud installs is
 pinned in `requirements.txt`.
+
+CSV checks describe the uploaded sample only. Exact production Spark-schema
+compatibility remains a future integration with a deployed validation endpoint.

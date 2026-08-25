@@ -15,7 +15,8 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
-from rules_engine.registry import FunctionRegistry
+
+from rules_engine import FunctionRegistry
 
 from . import custom_functions, sample_data
 from .schema import Ruleset, new_rule

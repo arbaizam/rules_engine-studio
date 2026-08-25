@@ -9,22 +9,29 @@ function registry, row evaluation, and uploaded test data.
 from __future__ import annotations
 
 import ast
+import os
+import subprocess
+import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from rules_engine.enums import ComparisonOperator, OperandKind
-from rules_engine.standard_functions import STANDARD_FUNCTION_SPECS
-
-from studio import custom_functions, engine, sample_data, state, yaml_io
+from studio import authoring, custom_functions, engine, sample_data, state, yaml_io
 from studio.schema import (
+    LITERAL_TYPES,
+    LOGIC_MODES,
+    OPERAND_KINDS,
     OPERATOR_NAMES,
+    OPERATORS_BY_NAME,
+    SCALAR_LITERAL_TYPES,
+    TOLERANCE_OPERATORS,
     Assignment,
     Condition,
     ConditionGroup,
     Operand,
     Rule,
     Ruleset,
+    normalize_literal_editor_type,
     referenced_columns,
 )
 
@@ -33,7 +40,11 @@ def field(name: str, *, default: object | None = None) -> Operand:
     """Return a field operand with an optional non-null literal fallback."""
     fallback = None
     if default is not None:
-        fallback = Operand(kind="literal", value=default)
+        fallback = Operand(
+            kind="literal",
+            value=default,
+            value_type=normalize_literal_editor_type(None, default),
+        )
     return Operand(kind="field", field_name=name, default_if_null=fallback)
 
 
@@ -105,9 +116,100 @@ def assignment(assignment_id: str, target: str, value: Operand) -> Assignment:
     return Assignment(assignment_id=assignment_id, target_field=target, value=value)
 
 
-def test_operator_catalogue_exactly_matches_engine_enum():
-    """The editor must not expose aliases or omit canonical operators."""
-    assert OPERATOR_NAMES == [operator.value for operator in ComparisonOperator]
+def test_dependency_pin_targets_authoring_contract_commit():
+    """Deployments must install the engine revision that exposes the manifest."""
+    requirements = (Path(__file__).parents[1] / "requirements.txt").read_text(encoding="utf-8")
+    assert "@667f80d5fa9e660687268d9752b53fbaced2e8f1" in requirements
+    assert authoring.manifest()["manifest_version"] == 1
+
+
+def test_studio_manifest_uses_the_shared_registry_and_is_cached():
+    """One registry must drive authoring metadata, validation, and evaluation."""
+    first = authoring.manifest()
+    second = authoring.manifest()
+
+    assert first is second
+    assert custom_functions.registry() is authoring.registry()
+    assert first["functions"] == list(authoring.function_contracts())
+
+
+def test_operator_catalogue_and_behavior_come_from_manifest():
+    """Operator names, arity, operand shape, and tolerance must stay engine-owned."""
+    contracts = {
+        contract["name"]: contract for contract in authoring.manifest()["comparison_operators"]
+    }
+
+    assert OPERATOR_NAMES == list(contracts)
+    assert {
+        name: (
+            specification.arity,
+            specification.right_operand_shape,
+            specification.supports_tolerance,
+        )
+        for name, specification in OPERATORS_BY_NAME.items()
+    } == {
+        name: (
+            contract["arity"],
+            contract["right_operand_shape"],
+            contract["supports_tolerance"],
+        )
+        for name, contract in contracts.items()
+    }
+    assert TOLERANCE_OPERATORS == {
+        "eq",
+        "ne",
+        "gt",
+        "ge",
+        "lt",
+        "le",
+        "in",
+        "not_in",
+    }
+
+
+def test_literal_hints_aliases_operand_kinds_and_logic_come_from_manifest():
+    """Editor validity choices must derive from the installed authoring contract."""
+    manifest = authoring.manifest()
+    literal_contracts = manifest["literal_type_hints"]
+
+    assert OPERAND_KINDS == tuple(manifest["operand_kinds"])
+    assert LOGIC_MODES == tuple(manifest["logical_operators"])
+    assert SCALAR_LITERAL_TYPES == tuple(contract["name"] for contract in literal_contracts)
+    assert LITERAL_TYPES == (*SCALAR_LITERAL_TYPES, "array", "struct", "null")
+    for contract in literal_contracts:
+        for alias in contract["aliases"]:
+            assert normalize_literal_editor_type(alias, None) == contract["name"]
+
+    restored = Operand.from_dict({"literal": 1.0, "value_type": "int"})
+    assert restored.value_type == "integer"
+    assert restored.to_dict() == {"literal": 1.0, "value_type": "integer"}
+
+
+def test_manifest_function_hint_vocabularies_and_dynamic_returns_are_consumed():
+    """Function metadata must be interpreted from the manifest without copied vocabularies."""
+    manifest = authoring.manifest()
+    argument_hints = set(authoring.function_argument_type_hints())
+    fixed_returns = set(authoring.fixed_function_return_type_hints())
+    dynamic_templates = authoring.dynamic_function_return_type_templates()
+    dynamic_prefixes = {template.partition(":")[0] for template in dynamic_templates}
+
+    assert argument_hints == set(manifest["function_argument_type_hints"])
+    assert fixed_returns == set(manifest["function_return_type_hints"]["fixed"])
+    assert dynamic_templates == (
+        "same_as:<argument_name>",
+        "common_type:<argument_name>",
+    )
+    assert all(
+        argument["type_hint"] in argument_hints
+        for function in custom_functions.specs()
+        for argument in function["arguments"]
+    )
+    assert all(
+        return_hint in fixed_returns or return_hint.partition(":")[0] in dynamic_prefixes
+        for function in custom_functions.specs()
+        if (return_hint := function["return_type_hint"]) is not None
+    )
+    assert custom_functions.spec("coalesce")["return_type_hint"] == "common_type:values"
 
 
 def test_operand_kinds_compile_to_authoritative_models():
@@ -143,22 +245,65 @@ def test_operand_kinds_compile_to_authoritative_models():
         compiled.rules[1].root_group.conditions[0].left.kind,
         compiled.rules[1].assignments[0].value.kind,
     }
-    assert kinds == {
-        OperandKind.FIELD,
-        OperandKind.LITERAL,
-        OperandKind.ASSIGNED,
-        OperandKind.CUSTOM_FUNCTION,
-    }
+    assert {kind.value for kind in kinds} == set(OPERAND_KINDS)
 
 
 def test_all_standard_function_specs_and_implementations_are_registered():
     """The studio registry must incorporate every engine standard function."""
-    expected = sorted(specification.function_name for specification in STANDARD_FUNCTION_SPECS)
+    expected = sorted(
+        specification["function_name"]
+        for specification in authoring.function_contracts()
+        if specification["active_flag"]
+    )
     assert custom_functions.names() == expected
     assert len(expected) == 58
     for function_name in expected:
         assert custom_functions.registry().get_spec(function_name).function_name == function_name
         assert callable(custom_functions.registry().get_implementation(function_name))
+
+
+def test_compiler_literal_type_errors_reach_studio_validation():
+    """The Studio must surface strengthened compiler errors without recreating them."""
+    draft = ruleset(
+        rule(
+            "bad_string",
+            10,
+            [condition("condition:bad_string", field("x"), "eq", literal(1, "string"))],
+            [assignment("assignment:bad_string:value", "value", literal("A"))],
+        )
+    )
+
+    issues = yaml_io.validate(draft)
+
+    assert len(issues) == 1
+    assert issues[0].check_name == "RULESET_COMPILATION_FAILED"
+    assert "String literal must be a string" in issues[0].message
+
+
+def test_compile_only_studio_modules_do_not_import_pyspark():
+    """Manifest, compilation, and semantic validation must remain Spark-free imports."""
+    root = Path(__file__).parents[1]
+    script = """
+import sys
+from studio import authoring, custom_functions, schema, yaml_io
+authoring.manifest()
+assert custom_functions.names()
+assert schema.OPERATOR_NAMES
+assert not any(name == 'pyspark' or name.startswith('pyspark.') for name in sys.modules)
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(root), environment.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=root,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_demo_ruleset_passes_production_validation():

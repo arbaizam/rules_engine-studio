@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from . import authoring
+
 
 @dataclass(frozen=True)
 class OperatorSpec:
@@ -35,57 +37,77 @@ class OperatorSpec:
     label : str
         Compact label shown in the condition editor.
     arity : int
-        Number of operands required by the operator.
+        Engine-defined number of operands required by the operator.
     hint : str
-        Optional authoring guidance.
+        Studio-owned authoring guidance.
+    right_operand_shape : str
+        Engine-defined right operand shape.
+    supports_tolerance : bool
+        Whether the engine applies absolute tolerance for the operator.
     """
 
     name: str
     label: str
     arity: int
     hint: str = ""
+    right_operand_shape: str = "any"
+    supports_tolerance: bool = False
 
 
-OPERATORS: tuple[OperatorSpec, ...] = (
-    OperatorSpec("eq", "equals", 2),
-    OperatorSpec("ne", "does not equal", 2),
-    OperatorSpec("gt", "is greater than", 2),
-    OperatorSpec("ge", "is at least", 2),
-    OperatorSpec("lt", "is less than", 2),
-    OperatorSpec("le", "is at most", 2),
-    OperatorSpec("in", "is one of", 2, "Use a collection literal on the right."),
-    OperatorSpec("not_in", "is not one of", 2, "Use a collection literal on the right."),
-    OperatorSpec("between", "is between", 2, "Use exactly two literal values."),
-    OperatorSpec("not_between", "is not between", 2, "Use exactly two literal values."),
-    OperatorSpec("like", "matches SQL pattern", 2),
-    OperatorSpec("not_like", "does not match SQL pattern", 2),
-    OperatorSpec("contains", "contains", 2),
-    OperatorSpec("not_contains", "does not contain", 2),
-    OperatorSpec("starts_with", "starts with", 2),
-    OperatorSpec("ends_with", "ends with", 2),
-    OperatorSpec("is_null", "is null", 1),
-    OperatorSpec("is_not_null", "is not null", 1),
+_OPERATOR_PRESENTATION: dict[str, tuple[str, str]] = {
+    "eq": ("equals", ""),
+    "ne": ("does not equal", ""),
+    "gt": ("is greater than", ""),
+    "ge": ("is at least", ""),
+    "lt": ("is less than", ""),
+    "le": ("is at most", ""),
+    "in": ("is one of", "Use a collection literal on the right."),
+    "not_in": ("is not one of", "Use a collection literal on the right."),
+    "between": ("is between", "Use exactly two literal values."),
+    "not_between": ("is not between", "Use exactly two literal values."),
+    "like": ("matches SQL pattern", ""),
+    "not_like": ("does not match SQL pattern", ""),
+    "contains": ("contains", ""),
+    "not_contains": ("does not contain", ""),
+    "starts_with": ("starts with", ""),
+    "ends_with": ("ends with", ""),
+    "is_null": ("is null", ""),
+    "is_not_null": ("is not null", ""),
+}
+
+
+def _operator_spec(contract: Mapping[str, Any]) -> OperatorSpec:
+    """Combine engine behavior with Studio-owned display text."""
+    name = str(contract["name"])
+    label, hint = _OPERATOR_PRESENTATION.get(name, (name.replace("_", " "), ""))
+    return OperatorSpec(
+        name=name,
+        label=label,
+        arity=int(contract["arity"]),
+        hint=hint,
+        right_operand_shape=str(contract["right_operand_shape"]),
+        supports_tolerance=bool(contract["supports_tolerance"]),
+    )
+
+
+OPERATORS: tuple[OperatorSpec, ...] = tuple(
+    _operator_spec(contract) for contract in authoring.comparison_operators()
 )
 
 OPERATORS_BY_NAME: dict[str, OperatorSpec] = {operator.name: operator for operator in OPERATORS}
 OPERATOR_NAMES: list[str] = [operator.name for operator in OPERATORS]
-UNARY_OPERATORS = frozenset({"is_null", "is_not_null"})
-TOLERANCE_OPERATORS = frozenset({"eq", "ne", "gt", "ge", "lt", "le"})
-LITERAL_TYPES = (
-    "string",
-    "integer",
-    "decimal",
-    "double",
-    "boolean",
-    "date",
-    "timestamp",
-    "timestamp_ntz",
-    "array",
-    "struct",
-    "null",
+UNARY_OPERATORS = frozenset(operator.name for operator in OPERATORS if operator.arity == 1)
+TOLERANCE_OPERATORS = frozenset(
+    operator.name for operator in OPERATORS if operator.supports_tolerance
 )
-LOGIC_MODES = ("all", "any")
-OPERAND_KINDS = ("field", "assigned", "literal", "custom_function")
+SCALAR_LITERAL_TYPES = tuple(
+    str(contract["name"]) for contract in authoring.literal_type_hints()
+)
+# Collections and null are Studio editor shapes, not engine ``value_type`` hints.
+STUDIO_LITERAL_SHAPES = ("array", "struct", "null")
+LITERAL_TYPES = (*SCALAR_LITERAL_TYPES, *STUDIO_LITERAL_SHAPES)
+LOGIC_MODES = authoring.logical_operators()
+OPERAND_KINDS = authoring.operand_kinds()
 
 
 def _uid() -> str:
@@ -126,7 +148,7 @@ def _argument_to_payload(value: Any) -> Any:
 def _argument_from_payload(value: Any) -> Any:
     """Restore nested operand-shaped custom-function argument data."""
     if isinstance(value, Mapping):
-        operand_keys = {"field", "assigned", "literal", "custom_function"} & set(value)
+        operand_keys = set(OPERAND_KINDS) & set(value)
         if operand_keys:
             return Operand.from_dict(value)
         return {str(key): _argument_from_payload(item) for key, item in value.items()}
@@ -209,13 +231,9 @@ class Operand:
             }
         else:
             payload = {"literal": self.value}
-            if self.value_type and self.value_type not in {
-                "array",
-                "list",
-                "null",
-                "struct",
-            }:
-                payload["value_type"] = self.value_type
+            value_type = authoring.canonical_literal_type_hint(self.value_type or "")
+            if value_type and value_type not in {*STUDIO_LITERAL_SHAPES, "list"}:
+                payload["value_type"] = value_type
         if self.default_if_null is not None:
             fallback = self.default_if_null.to_dict()
             if set(fallback) == {"literal"}:
@@ -280,7 +298,7 @@ class Operand:
         return cls(
             kind="literal",
             value=value,
-            value_type=str(data.get("value_type") or infer_literal_type(value)),
+            value_type=normalize_literal_editor_type(data.get("value_type"), value),
             default_if_null=default_operand,
         )
 
@@ -313,6 +331,14 @@ def infer_literal_type(value: Any) -> str:
     if isinstance(value, Mapping):
         return "struct"
     return "string"
+
+
+def normalize_literal_editor_type(type_hint: Any, value: Any) -> str:
+    """Normalize manifest aliases and Studio collection shapes for editing."""
+    if type_hint is None or str(type_hint) == "":
+        return infer_literal_type(value)
+    normalized = "array" if str(type_hint) == "list" else str(type_hint)
+    return authoring.canonical_literal_type_hint(normalized)
 
 
 @dataclass

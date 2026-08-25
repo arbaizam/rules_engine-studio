@@ -15,7 +15,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from pyspark.sql import types as T
-from rules_engine.compiler_yaml import YamlRulesetCompiler
 from rules_engine.exceptions import RulesEngineError
 from rules_engine.models import Ruleset as CompiledRuleset
 from rules_engine.runtime import SparkRowEvaluator
@@ -24,7 +23,7 @@ from rules_engine.spark_runtime import SparkRulesEngineRuntime
 
 from rules_engine import __version__
 
-from . import custom_functions
+from . import authoring
 from .schema import Assignment, Condition, Operand, Rule, Ruleset
 
 COMPACT_FIELDS = ("error", "matched", "matched_rule_ids", "assign")
@@ -90,12 +89,12 @@ def compile_ruleset(ruleset: Ruleset) -> CompiledRuleset:
     rules_engine.models.Ruleset
         Canonical compiled ruleset.
     """
-    return YamlRulesetCompiler().compile_payload(ruleset.to_dict())
+    return authoring.compile_payload(ruleset.to_dict())
 
 
 def _runtime() -> SparkRowEvaluator:
     """Return a production row evaluator bound to all standard functions."""
-    return SparkRowEvaluator.without_repository(custom_functions.registry())
+    return SparkRowEvaluator.without_repository(authoring.registry())
 
 
 def _temporary_ruleset(rule: Rule) -> Ruleset:
@@ -399,7 +398,7 @@ def _full_audit_result(
         field_name: _spark_type_for_assignment(field_name, row, compact)
         for field_name in assignment_fields
     }
-    evaluator = SparkRulesEngineRuntime(object(), custom_functions.registry())._build_row_evaluator(
+    evaluator = SparkRulesEngineRuntime(object(), authoring.registry())._build_row_evaluator(
         ruleset,
         assignment_fields,
         assignment_types,

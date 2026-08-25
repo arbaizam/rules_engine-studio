@@ -1,23 +1,29 @@
 """
 Shared Streamlit widgets for canonical rules-engine metadata.
 
-Function argument controls are generated from ``CustomFunctionSpec`` rather
-than handwritten signatures. This keeps all registered functions and their
-required, optional, literal-only, type, and allowed-value contracts aligned
-with the production registry.
+Function argument controls are generated from the engine-owned authoring
+manifest rather than handwritten signatures. This keeps all registered
+functions and their required, optional, literal-only, type, and allowed-value
+contracts aligned with the production registry.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import InvalidOperation
 from typing import Any
 
 import streamlit as st
 
 from .. import custom_functions
-from ..schema import LITERAL_TYPES, Operand, infer_literal_type
+from ..schema import (
+    LITERAL_TYPES,
+    OPERAND_KINDS,
+    Operand,
+    infer_literal_type,
+    normalize_literal_editor_type,
+)
 
 KIND_LABELS = {
     "field": "Input field",
@@ -25,7 +31,7 @@ KIND_LABELS = {
     "literal": "Literal",
     "custom_function": "Function",
 }
-KIND_ORDER = ["field", "assigned", "literal", "custom_function"]
+KIND_ORDER = list(OPERAND_KINDS)
 
 
 def index_of(options: Sequence[Any], value: Any, default: int = 0) -> int:
@@ -75,7 +81,7 @@ def operand_editor(
         label,
         KIND_ORDER,
         index=index_of(KIND_ORDER, operand.kind, 2),
-        format_func=lambda kind: KIND_LABELS[kind],
+        format_func=lambda kind: KIND_LABELS.get(kind, kind.replace("_", " ").title()),
         key=f"{key}-kind",
         label_visibility="visible" if not compact else "collapsed",
     )
@@ -105,12 +111,16 @@ def operand_editor(
             in_assignment=in_assignment,
         )
     else:
-        if operand.value_type == "list":
-            operand.value_type = "array"
+        operand.value_type = normalize_literal_editor_type(operand.value_type, operand.value)
+        literal_types = list(
+            dict.fromkeys(
+                [*LITERAL_TYPES, operand.value_type] if operand.value_type else LITERAL_TYPES
+            )
+        )
         operand.value_type = st.selectbox(
             "Literal type",
-            LITERAL_TYPES,
-            index=index_of(LITERAL_TYPES, operand.value_type, 0),
+            literal_types,
+            index=index_of(literal_types, operand.value_type, 0),
             key=f"{key}-vtype",
             label_visibility="collapsed",
         )
@@ -170,81 +180,83 @@ def _function_editor(
     )
     specification = custom_functions.spec(operand.function)
     st.caption(
-        f"{specification.description or 'Registered custom function.'} "
-        f"Returns `{specification.return_type_hint or 'any'}`."
+        f"{specification['description'] or 'Registered custom function.'} "
+        f"Returns `{specification['return_type_hint'] or 'any'}`."
     )
-    allowed_names = set(specification.argument_names)
+    allowed_names = {argument["name"] for argument in specification["arguments"]}
     operand.args = {name: value for name, value in operand.args.items() if name in allowed_names}
-    for argument in specification.arguments:
-        authored = argument.name in operand.args
-        if not argument.required:
+    for argument in specification["arguments"]:
+        argument_name = str(argument["name"])
+        argument_type_hint = str(argument["type_hint"])
+        authored = argument_name in operand.args
+        if not argument["required"]:
             authored = st.checkbox(
-                f"Override `{argument.name}`",
+                f"Override `{argument_name}`",
                 value=authored,
-                key=f"{key}-arg-{argument.name}-enabled",
-                help=f"Registry default: {argument.default!r}",
+                key=f"{key}-arg-{argument_name}-enabled",
+                help=f"Registry default: {argument.get('default')!r}",
             )
             if not authored:
-                operand.args.pop(argument.name, None)
+                operand.args.pop(argument_name, None)
                 continue
-        if argument.literal_only:
+        if argument["literal_only"]:
             current = operand.args.get(
-                argument.name,
-                argument.default
-                if not argument.required
-                else _default_for_hint(argument.type_hint),
+                argument_name,
+                argument.get("default")
+                if not argument["required"]
+                else _default_for_hint(argument_type_hint),
             )
-            operand.args[argument.name] = _literal_argument_input(
+            operand.args[argument_name] = _literal_argument_input(
                 argument,
                 current,
-                f"{key}-arg-{argument.name}",
+                f"{key}-arg-{argument_name}",
             )
             continue
-        current = operand.args.get(argument.name)
-        if argument.type_hint in {
+        current = operand.args.get(argument_name)
+        if argument_type_hint in {
             "sequence",
             "string_sequence",
             "integer_sequence",
             "date_sequence",
         }:
             mode = st.selectbox(
-                f"{argument.name} source",
+                f"{argument_name} source",
                 ("Operand", "Authored sequence"),
                 index=1 if isinstance(current, (list, tuple, set)) else 0,
-                key=f"{key}-arg-{argument.name}-mode",
+                key=f"{key}-arg-{argument_name}-mode",
             )
             if mode == "Authored sequence":
                 values = list(current) if isinstance(current, (list, tuple, set)) else []
                 _sequence_operand_editor(
                     values,
-                    f"{key}-arg-{argument.name}",
+                    f"{key}-arg-{argument_name}",
                     columns,
                     assigned,
                     in_assignment=in_assignment,
-                    item_type_hint=argument.type_hint,
+                    item_type_hint=argument_type_hint,
                 )
-                operand.args[argument.name] = values
+                operand.args[argument_name] = values
                 continue
         if not isinstance(current, Operand):
             default_value = (
                 current
                 if current is not None
-                else argument.default
-                if not argument.required
-                else _default_for_hint(argument.type_hint)
+                else argument.get("default")
+                if not argument["required"]
+                else _default_for_hint(argument_type_hint)
             )
             current = Operand(
                 kind="literal",
                 value=default_value,
-                value_type=_literal_type_for_hint(argument.type_hint, default_value),
+                value_type=_literal_type_for_hint(argument_type_hint, default_value),
             )
-            operand.args[argument.name] = current
-        st.markdown(f"`{argument.name}` · {argument.type_hint}")
+            operand.args[argument_name] = current
+        st.markdown(f"`{argument_name}` · {argument_type_hint}")
         operand_editor(
             current,
-            f"{key}-arg-{argument.name}",
+            f"{key}-arg-{argument_name}",
             columns,
-            label=argument.name,
+            label=argument_name,
             compact=True,
             assigned=assigned,
             in_assignment=in_assignment,
@@ -299,31 +311,38 @@ def _sequence_operand_editor(
         st.rerun()
 
 
-def _literal_argument_input(argument: Any, current: Any, key: str) -> Any:
+def _literal_argument_input(argument: Mapping[str, Any], current: Any, key: str) -> Any:
     """Render a literal-only argument from its registry contract."""
-    label = f"{argument.name} · {argument.type_hint}"
-    if argument.allowed_values is not None:
-        values = list(argument.allowed_values)
+    argument_name = str(argument["name"])
+    argument_type_hint = str(argument["type_hint"])
+    label = f"{argument_name} · {argument_type_hint}"
+    if argument.get("allowed_values") is not None:
+        values = list(argument["allowed_values"])
         return st.selectbox(
             label,
             values,
             index=index_of(values, current),
             key=key,
         )
-    if argument.type_hint == "boolean":
+    if argument_type_hint == "boolean":
         return st.checkbox(label, value=bool(current), key=key)
-    if argument.type_hint == "integer":
+    if argument_type_hint == "integer":
         return int(st.number_input(label, value=int(current or 0), step=1, key=key))
-    if argument.type_hint in {"sequence", "string_sequence", "integer_sequence"}:
+    if argument_type_hint in {
+        "sequence",
+        "string_sequence",
+        "integer_sequence",
+        "date_sequence",
+    }:
         values = list(current) if isinstance(current, (list, tuple, set)) else []
         text = ", ".join(str(value) for value in values)
         authored = st.text_input(label, value=text, key=key)
         parsed = [part.strip() for part in authored.split(",") if part.strip()]
-        if argument.type_hint == "integer_sequence":
+        if argument_type_hint == "integer_sequence":
             try:
                 return tuple(int(value) for value in parsed)
             except ValueError:
-                st.error(f"`{argument.name}` requires integers.")
+                st.error(f"`{argument_name}` requires integers.")
                 return tuple(values)
         return tuple(parsed)
     return st.text_input(label, value="" if current is None else str(current), key=key)
@@ -337,6 +356,8 @@ def _default_for_hint(type_hint: str) -> Any:
         return False
     if type_hint in {"sequence", "string_sequence", "integer_sequence", "date_sequence"}:
         return []
+    if type_hint == "mapping":
+        return {}
     return ""
 
 
@@ -352,6 +373,7 @@ def _literal_type_for_hint(type_hint: str, value: Any) -> str:
         "string_sequence": "array",
         "integer_sequence": "array",
         "date_sequence": "array",
+        "mapping": "struct",
         "string": "string",
     }
     return mapping.get(type_hint, infer_literal_type(value))
@@ -371,12 +393,19 @@ def _default_if_null_editor(operand: Operand, key: str) -> None:
     if operand.default_if_null is None:
         operand.default_if_null = Operand(kind="literal", value="", value_type="string")
     fallback = operand.default_if_null
-    if fallback.value_type == "list":
-        fallback.value_type = "array"
+    fallback.value_type = normalize_literal_editor_type(fallback.value_type, fallback.value)
+    fallback_types = list(
+        dict.fromkeys(
+            [
+                *[kind for kind in LITERAL_TYPES if kind != "null"],
+                fallback.value_type,
+            ]
+        )
+    )
     fallback.value_type = st.selectbox(
         "Default type",
-        [kind for kind in LITERAL_TYPES if kind != "null"],
-        index=index_of([kind for kind in LITERAL_TYPES if kind != "null"], fallback.value_type),
+        fallback_types,
+        index=index_of(fallback_types, fallback.value_type),
         key=f"{key}-default-type",
         label_visibility="collapsed",
     )

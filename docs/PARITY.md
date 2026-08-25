@@ -4,10 +4,11 @@ Rules Engine Studio does not contain a preview evaluator.
 
 | Studio operation | Authoritative implementation |
 |---|---|
+| Authoring choices and function metadata | `rules_engine.build_authoring_manifest` |
 | Draft compilation | `rules_engine.compiler_yaml.YamlRulesetCompiler` |
 | Semantic validation | `rules_engine.validator.RulesetValidator` |
 | YAML export | `rules_engine.exporter_yaml.YamlRulesetExporter` |
-| Function metadata and implementations | `FunctionRegistry` populated by `register_standard_functions` |
+| Function implementations | `FunctionRegistry` populated by `register_standard_functions` |
 | Row evaluation | `rules_engine.runtime.SparkRowEvaluator` |
 
 `SparkRowEvaluator` is the production row implementation used inside Spark
@@ -20,6 +21,11 @@ The studio adds two presentation behaviors only:
 - Exceptions are captured per test row and displayed in an `error` field.
 - Missing fields in the uploaded test data are authoring warnings. They are not
   engine validation issues.
+
+The manifest supplies authoring-time behavior and the semantic validator checks
+complete documents. Uploaded CSV data does not provide authoritative Spark
+precision, nullability, or production table metadata, so the Studio does not
+claim production-schema compatibility.
 
 The dependency is pinned to a specific `rules_engine` commit. Updating that pin
 must be accompanied by the contract tests in `tests/test_studio.py`.

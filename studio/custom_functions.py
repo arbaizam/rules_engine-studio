@@ -1,10 +1,8 @@
-"""
-Authoritative custom-function registry for Rules Engine Studio.
+"""Manifest-backed custom-function access for Rules Engine Studio.
 
-The studio registers the same metadata contracts and Python implementations
-used by ``rules_engine``. Function selectors, argument editors, validation, and
-row evaluation therefore share one registry instead of maintaining parallel
-demo behavior.
+Authoring metadata comes from the engine-owned manifest built for the same
+registry used by validation and row evaluation. Runtime calls continue through
+the registered production implementations.
 """
 
 from __future__ import annotations
@@ -12,26 +10,26 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from rules_engine.registry import CustomFunctionSpec, FunctionRegistry
-from rules_engine.standard_functions import STANDARD_FUNCTION_SPECS, register_standard_functions
+from rules_engine import FunctionRegistry
 
-_REGISTRY = register_standard_functions(FunctionRegistry())
-_SPECS: dict[str, CustomFunctionSpec] = {
-    specification.function_name: specification for specification in STANDARD_FUNCTION_SPECS
-}
+from . import authoring
 
 
 def registry() -> FunctionRegistry:
     """Return the registry used by validation and production row evaluation."""
-    return _REGISTRY
+    return authoring.registry()
 
 
-def specs() -> tuple[CustomFunctionSpec, ...]:
-    """Return every active function contract in canonical name order."""
-    return tuple(_SPECS[name] for name in sorted(_SPECS) if _SPECS[name].active_flag)
+def specs() -> tuple[dict[str, Any], ...]:
+    """Return active manifest function contracts in canonical name order."""
+    return tuple(
+        specification
+        for specification in authoring.function_contracts()
+        if specification["active_flag"]
+    )
 
 
-def spec(function_name: str) -> CustomFunctionSpec:
+def spec(function_name: str) -> dict[str, Any]:
     """
     Return metadata for one registered function.
 
@@ -42,10 +40,14 @@ def spec(function_name: str) -> CustomFunctionSpec:
 
     Returns
     -------
-    CustomFunctionSpec
-        Registered metadata contract.
+    dict[str, Any]
+        Engine-owned manifest contract.
     """
-    return _REGISTRY.get_spec(function_name)
+    return next(
+        specification
+        for specification in authoring.function_contracts()
+        if specification["function_name"] == function_name
+    )
 
 
 def names(*, in_assignment: bool | None = None) -> list[str]:
@@ -63,20 +65,20 @@ def names(*, in_assignment: bool | None = None) -> list[str]:
     list[str]
         Sorted canonical function names.
     """
-    available: Iterable[CustomFunctionSpec] = specs()
+    available: Iterable[dict[str, Any]] = specs()
     if in_assignment is True:
         available = (
             specification
             for specification in available
-            if specification.allowed_in_assignment_flag
+            if specification["allowed_in_assignment_flag"]
         )
     elif in_assignment is False:
         available = (
             specification
             for specification in available
-            if specification.allowed_in_condition_flag
+            if specification["allowed_in_condition_flag"]
         )
-    return sorted(specification.function_name for specification in available)
+    return sorted(specification["function_name"] for specification in available)
 
 
 def call(function_name: str, authored_args: dict[str, Any]) -> Any:
@@ -95,6 +97,7 @@ def call(function_name: str, authored_args: dict[str, Any]) -> Any:
     Any
         Function result.
     """
-    specification = _REGISTRY.get_spec(function_name)
-    implementation = _REGISTRY.get_implementation(function_name)
+    shared_registry = registry()
+    specification = shared_registry.get_spec(function_name)
+    implementation = shared_registry.get_implementation(function_name)
     return implementation(**specification.bind_args(authored_args))

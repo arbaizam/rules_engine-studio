@@ -11,13 +11,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from rules_engine.compiler_yaml import YamlRulesetCompiler
 from rules_engine.exceptions import RulesEngineError
 from rules_engine.exporter_yaml import YamlRulesetExporter
-from rules_engine.validator import RulesetValidator
 
-from . import custom_functions
-from .engine import compile_ruleset
+from . import authoring
 from .schema import Ruleset, referenced_columns
 
 
@@ -35,7 +32,7 @@ def to_yaml(ruleset: Ruleset) -> str:
     str
         Canonical YAML accepted by ``YamlRulesetCompiler``.
     """
-    return YamlRulesetExporter().export_text(compile_ruleset(ruleset))
+    return YamlRulesetExporter().export_text(authoring.compile_payload(ruleset.to_dict()))
 
 
 def from_yaml(text: str) -> Ruleset:
@@ -52,7 +49,7 @@ def from_yaml(text: str) -> Ruleset:
     Ruleset
         Mutable studio draft.
     """
-    compiled = YamlRulesetCompiler().compile_text(text)
+    compiled = authoring.compile_text(text)
     return Ruleset.from_dict(YamlRulesetExporter().export_payload(compiled))
 
 
@@ -109,7 +106,7 @@ def validate(
     del functions
     issues: list[Issue] = []
     try:
-        compiled = compile_ruleset(ruleset)
+        compiled = authoring.compile_payload(ruleset.to_dict())
     except (RulesEngineError, TypeError, ValueError) as exc:
         return [
             Issue(
@@ -120,7 +117,7 @@ def validate(
             )
         ]
 
-    result = RulesetValidator(custom_functions.registry()).validate(compiled)
+    result = authoring.validate(compiled)
     issues.extend(
         Issue(
             severity="error",
