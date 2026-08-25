@@ -86,8 +86,11 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     """The authoring surface uses one control treatment and offsets root groups."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     styles = next(markdown.value for markdown in app.markdown if "<style>" in markdown.value)
-    assert "--studio-control-bg: #151923;" in styles
-    assert "--studio-control-border: #94A3B8;" in styles
+    assert "--studio-navy: #003359;" in styles
+    assert "--studio-blue: #93B1CC;" in styles
+    assert "--studio-lime: #AAAD00;" in styles
+    assert "--studio-control-bg: #071E2D;" in styles
+    assert "--studio-control-border: #52758F;" in styles
     assert "--studio-control-text: #F8FAFC;" in styles
     assert "border: 1px solid var(--studio-control-border)" in styles
     assert "background-color: var(--studio-control-bg)" in styles
@@ -101,12 +104,16 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[data-testid="stDateInputField"]' in styles
     assert '[data-testid="stTimeInputTimeDisplay"]' in styles
     assert "box-shadow: 0 0 0 1px var(--studio-control-border)" in styles
-    assert "--studio-section-border: #566780;" in styles
-    assert "--studio-table-border: #718198;" in styles
+    assert "--studio-section-border: #52758F;" in styles
+    assert "--studio-table-border: #7194AE;" in styles
     assert "border-width: 2px" in styles
     assert '[data-testid="stDataFrame"]' in styles
     assert '[data-testid="stExpander"] > details' in styles
     assert '[data-testid="stTabs"] [role="tablist"]' in styles
+    assert '[data-testid="stMainBlockContainer"]' in styles
+    assert "padding-top: 3.5rem !important;" in styles
+    assert '[data-testid="stTabs"] [role="tab"] p' in styles
+    assert "font-size: 1.25rem !important;" in styles
     assert '[data-testid="stDivider"]' in styles
     assert '[class*="st-key-rule_node_"]' in styles
     assert "padding-left: 1.5rem;" in styles
@@ -116,6 +123,13 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert "margin-bottom: 1rem;" in styles
     assert '[class*="st-key-expression_"]' in styles
     assert "margin: 0.35rem 0 0.75rem;" in styles
+    assert ".studio-expression-preview" not in styles
+
+    theme = (Path(__file__).parents[1] / ".streamlit" / "config.toml").read_text(
+        encoding="utf-8"
+    )
+    assert 'primaryColor = "#AAAD00"' in theme
+    assert 'secondaryBackgroundColor = "#003359"' in theme
 
 
 def test_expression_previews_render_and_follow_condition_edits():
@@ -135,6 +149,7 @@ def test_expression_previews_render_and_follow_condition_edits():
         for expander in app.expander
         if " expression ·" in expander.label
     )
+    assert all("studio-expression-preview" not in markdown.value for markdown in app.markdown)
     assert any(
         'studio-expression-label">Matches when' in markdown.value
         for markdown in app.markdown

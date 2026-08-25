@@ -261,13 +261,11 @@ def _expression_expander(label: str, heading: str, expression: str, *, key: str)
 
 
 def _expression_card(heading: str, expression: str) -> None:
-    """Render escaped, whitespace-preserving human-readable expression text."""
+    """Render escaped expression text without an extra nested panel."""
     st.markdown(
         (
-            '<div class="studio-expression-preview">'
             f'<div class="studio-expression-label">{escape(heading)}</div>'
             f'<div class="studio-expression-text">{escape(expression)}</div>'
-            "</div>"
         ),
         unsafe_allow_html=True,
     )

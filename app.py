@@ -36,8 +36,8 @@ _RULE_SORT_STYLE = """
 }
 .sortable-item,
 .sortable-item:hover {
-    background: #151923;
-    border: 2px solid #566780;
+    background: #071E2D;
+    border: 2px solid #52758F;
     border-radius: 0.55rem;
     color: #F8FAFC;
     cursor: grab;
@@ -46,8 +46,8 @@ _RULE_SORT_STYLE = """
     padding: 0.55rem 0.65rem;
 }
 .sortable-item:hover {
-    border-color: #94A3B8;
-    background: #182131;
+    border-color: #93B1CC;
+    background: #0D2C43;
 }
 .sortable-item:active {
     cursor: grabbing;
@@ -82,24 +82,30 @@ def inject_styles() -> None:
         """
         <style>
         :root {
-            --studio-panel: #121824;
-            --studio-panel-raised: #182131;
-            --studio-control-bg: #151923;
-            --studio-control-border: #94A3B8;
-            --studio-control-border-hover: #C4CFDD;
+            --studio-navy: #003359;
+            --studio-blue: #93B1CC;
+            --studio-lime: #AAAD00;
+            --studio-panel: #082238;
+            --studio-panel-raised: #0D2C43;
+            --studio-control-bg: #071E2D;
+            --studio-control-border: #52758F;
+            --studio-control-border-hover: #93B1CC;
             --studio-control-text: #F8FAFC;
-            --studio-border: #61718B;
-            --studio-section-border: #566780;
-            --studio-table-border: #718198;
-            --studio-rule: #38BDF8;
-            --studio-group: #A78BFA;
-            --studio-condition: #F59E0B;
-            --studio-assignment: #34D399;
-            --studio-expression: #93C5FD;
+            --studio-border: #456A85;
+            --studio-section-border: #52758F;
+            --studio-table-border: #7194AE;
+            --studio-rule: #93B1CC;
+            --studio-group: #AAAD00;
+            --studio-condition: #D2D44A;
+            --studio-assignment: #6D97B8;
+        }
+
+        [data-testid="stMainBlockContainer"] {
+            padding-top: 3.5rem !important;
         }
 
         [data-testid="stSidebar"] {
-            background: #0C111B;
+            background: #001F35;
             border-right: 1px solid var(--studio-border);
         }
 
@@ -142,15 +148,15 @@ def inject_styles() -> None:
         [data-testid="stTextInputField"]::placeholder,
         [data-testid="stNumberInputField"]::placeholder,
         [data-testid="stTextArea"] textarea::placeholder {
-            color: #AEBBCD !important;
-            -webkit-text-fill-color: #AEBBCD !important;
+            color: #AFC1CF !important;
+            -webkit-text-fill-color: #AFC1CF !important;
             opacity: 0.9;
         }
 
         [data-testid="stNumberInput"] button {
             background-color: transparent !important;
             color: var(--studio-control-text) !important;
-            border-left: 1px solid #718198 !important;
+            border-left: 1px solid var(--studio-table-border) !important;
         }
 
         [data-testid="stTextInputRootElement"]:hover,
@@ -179,8 +185,8 @@ def inject_styles() -> None:
         [data-testid="stNumberInput"] [data-baseweb="input"]:focus-within,
         [data-testid="stSelectbox"] [data-baseweb="select"]:focus-within,
         [data-testid="stMultiSelect"] [data-baseweb="select"]:focus-within {
-            border-color: #C4B5FD !important;
-            box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.55) !important;
+            border-color: var(--studio-lime) !important;
+            box-shadow: 0 0 0 2px rgba(170, 173, 0, 0.45) !important;
         }
 
         [data-testid="stVerticalBlockBorderWrapper"] {
@@ -193,7 +199,7 @@ def inject_styles() -> None:
         [data-testid="stDataEditor"] {
             border: 2px solid var(--studio-table-border) !important;
             border-radius: 0.65rem !important;
-            box-shadow: 0 0 0 1px rgba(113, 129, 152, 0.22) !important;
+            box-shadow: 0 0 0 1px rgba(147, 177, 204, 0.22) !important;
         }
 
         [data-testid="stExpander"] > details {
@@ -203,6 +209,36 @@ def inject_styles() -> None:
 
         [data-testid="stTabs"] [role="tablist"] {
             border-bottom: 2px solid var(--studio-section-border) !important;
+        }
+
+        [data-testid="stTabs"] [role="tab"] {
+            height: 3.25rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+
+        [data-testid="stTabs"] [role="tab"] p {
+            font-size: 1.25rem !important;
+            font-weight: 750 !important;
+        }
+
+        [data-testid="stTabs"] [role="tab"][aria-selected="true"] p {
+            color: #CFD23A !important;
+        }
+
+        [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+            background-color: var(--studio-lime) !important;
+        }
+
+        [data-testid="stBaseButton-primary"] {
+            background-color: var(--studio-lime) !important;
+            border-color: var(--studio-lime) !important;
+            color: #071722 !important;
+        }
+
+        [data-testid="stBaseButton-primary"] p {
+            color: #071722 !important;
+            font-weight: 750 !important;
         }
 
         [data-testid="stDivider"] {
@@ -224,14 +260,14 @@ def inject_styles() -> None:
             margin-left: 1rem;
             width: calc(100% - 1rem);
             border-left: 4px solid var(--studio-condition);
-            background: #171C26;
+            background: #0A2436;
         }
 
         [class*="st-key-assignment_"] {
             margin-left: 1rem;
             width: calc(100% - 1rem);
             border-left: 4px solid var(--studio-assignment);
-            background: #131F22;
+            background: #0A2738;
         }
 
         [class*="st-key-group_depth_1_"],
@@ -247,7 +283,7 @@ def inject_styles() -> None:
         }
 
         .studio-node-label {
-            color: #CBD5E1;
+            color: #C7D7E3;
             font-size: 0.72rem;
             font-weight: 800;
             letter-spacing: 0.11em;
@@ -259,29 +295,21 @@ def inject_styles() -> None:
             margin-bottom: 1rem;
         }
 
-        .studio-expression-preview {
-            background: rgba(30, 41, 59, 0.72);
-            border: 1px solid #64748B;
-            border-left: 3px solid var(--studio-expression);
-            border-radius: 0.5rem;
-            margin: 0.35rem 0 0.15rem;
-            padding: 0.65rem 0.8rem;
-        }
-
         .studio-expression-label {
-            color: #BFDBFE;
+            color: var(--studio-blue);
             font-size: 0.72rem;
             font-weight: 800;
             letter-spacing: 0.06em;
-            margin-bottom: 0.3rem;
+            margin-bottom: 0.35rem;
             text-transform: uppercase;
         }
 
         .studio-expression-text {
             color: #F8FAFC;
-            font-size: 0.9rem;
+            font-size: 0.95rem;
             line-height: 1.55;
             overflow-wrap: anywhere;
+            padding: 0 0.15rem 0.25rem;
             white-space: pre-wrap;
         }
 
