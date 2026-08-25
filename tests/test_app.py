@@ -7,6 +7,7 @@ boundary without requiring a browser or network connection.
 
 from pathlib import Path
 
+import pandas as pd
 from streamlit.testing.v1 import AppTest
 
 from studio.schema import Condition, ConditionGroup
@@ -16,12 +17,9 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     """The rendered app exposes every function and both data/YAML uploaders."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
-    sorter = next(expander for expander in app.expander if expander.label == "Drag to reorder")
-    assert sorter.proto.expanded is True
-    assert any(
-        caption.value == "Drag rules into order · Up/Down remains available"
-        for caption in sorter.caption
-    )
+    reorder = next(expander for expander in app.expander if expander.label == "Reorder rules")
+    assert reorder.proto.expanded is False
+    assert any(button.label == "Move down" for button in reorder.button)
 
     eligibility_rule = next(button for button in app.button if button.label.startswith("10"))
     eligibility_rule.click()
@@ -33,6 +31,24 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     assert "decimal_safe_divide" in function.options
     assert "last_business_day_of_month" in function.options
     assert len(app.get("file_uploader")) == 2
+
+
+def test_native_rule_reorder_preserves_the_project_and_sample_rows():
+    """Reordering must not restore either demo rules or demo sample data."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+    ruleset_id = next(field for field in app.text_input if field.label == "Ruleset id")
+    ruleset_id.set_value("reorder_regression")
+    app.run()
+
+    app.session_state["sample_frame"] = pd.DataFrame([{"marker": "custom-row"}])
+    first_rule = app.session_state["draft_ruleset"].ordered_rules()[0]
+    next(button for button in app.button if button.key == f"reorder-down-{first_rule.uid}").click()
+    app.run()
+
+    assert not app.exception
+    assert app.session_state["draft_ruleset"].ruleset_id == "reorder_regression"
+    assert app.session_state["sample_frame"].to_dict("records") == [{"marker": "custom-row"}]
+    assert app.session_state["draft_ruleset"].ordered_rules()[1].uid == first_rule.uid
 
 
 def test_app_renders_nested_literal_audit_and_hierarchy_controls():

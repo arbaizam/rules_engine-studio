@@ -1,5 +1,4 @@
 streamlit>=1.36
-streamlit-sortables==0.3.1
 pandas>=2.0
 pyyaml>=6.0
 rules-engine @ git+https://github.com/arbaizam/rules_engine.git@667f80d5fa9e660687268d9752b53fbaced2e8f1

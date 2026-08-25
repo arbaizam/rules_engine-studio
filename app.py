@@ -8,10 +8,8 @@ with the production row runtime, and exports compiler-validated YAML.
 from __future__ import annotations
 
 import streamlit as st
-from streamlit_sortables import sort_items
 
 from studio import state, yaml_io
-from studio.schema import Rule
 from studio.ui import data, evaluate, rules, yaml_tab
 
 st.set_page_config(
@@ -20,61 +18,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-_RULE_SORT_STYLE = """
-.sortable-component {
-    background: transparent;
-    padding: 0;
-}
-.sortable-component.vertical {
-    gap: 0.35rem;
-}
-.sortable-component.vertical .sortable-container,
-.sortable-container-body {
-    background: transparent;
-    padding: 0;
-}
-.sortable-item,
-.sortable-item:hover {
-    background: #071E2D;
-    border: 2px solid #52758F;
-    border-radius: 0.55rem;
-    color: #F8FAFC;
-    cursor: grab;
-    font-size: 0.88rem;
-    margin: 0.3rem 0;
-    padding: 0.55rem 0.65rem;
-}
-.sortable-item:hover {
-    border-color: #93B1CC;
-    background: #0D2C43;
-}
-.sortable-item:active {
-    cursor: grabbing;
-}
-"""
-
-
-def _render_rule_sorter(ordered: list[Rule]) -> None:
-    """Render drag ordering and commit changed positions to rule order values."""
-    labels: list[str] = []
-    rules_by_label: dict[str, Rule] = {}
-    for rule in ordered:
-        label = f"{rule.rule_order} · {rule.rule_id} — {rule.rule_name}"
-        if label in rules_by_label:
-            label = f"{label} · {rule.uid[:6]}"
-        labels.append(label)
-        rules_by_label[label] = rule
-    signature = "-".join(rule.uid for rule in ordered)
-    dragged = sort_items(
-        labels,
-        direction="vertical",
-        custom_style=_RULE_SORT_STYLE,
-        key=f"rule-order-{signature}",
-    )
-    if dragged != labels and state.reorder_rules([rules_by_label[label].uid for label in dragged]):
-        st.rerun()
-
 
 def inject_styles() -> None:
     """Apply the studio's dark, high-contrast authoring surface."""
@@ -352,10 +295,6 @@ def sidebar() -> None:
 
         if not ordered:
             st.caption("None yet.")
-        elif len(ordered) > 1:
-            with st.expander("Drag to reorder", expanded=True):
-                st.caption("Drag rules into order · Up/Down remains available")
-                _render_rule_sorter(ordered)
         for rule in ordered:
             selected = rule.uid == st.session_state.get(state.SELECTED)
             label = f"{rule.rule_order} · {rule.rule_id or 'untitled'}"
@@ -370,19 +309,38 @@ def sidebar() -> None:
                 state.select_rule(rule.uid)
                 st.rerun()
 
+        current = state.selected_rule()
+        if len(ordered) > 1 and current is not None:
+            current_index = next(
+                index for index, rule in enumerate(ordered) if rule.uid == current.uid
+            )
+            with st.expander("Reorder rules", expanded=False):
+                st.caption(
+                    f"Selected: {current.rule_order} · {current.rule_id or 'untitled'}"
+                )
+                move = st.columns(2)
+                if move[0].button(
+                    "Move up",
+                    key=f"reorder-up-{current.uid}",
+                    width="stretch",
+                    disabled=current_index == 0,
+                ):
+                    state.queue(lambda uid=current.uid: state.move_rule(uid, -1))
+                if move[1].button(
+                    "Move down",
+                    key=f"reorder-down-{current.uid}",
+                    width="stretch",
+                    disabled=current_index == len(ordered) - 1,
+                ):
+                    state.queue(lambda uid=current.uid: state.move_rule(uid, 1))
+
         add = st.columns(2)
         if add[0].button("Add rule", width="stretch"):
             state.queue(state.add_rule)
-        current = state.selected_rule()
         if add[1].button("Duplicate", width="stretch", disabled=current is None):
             state.queue(lambda uid=current.uid: state.duplicate_rule(uid))
 
-        move = st.columns(3)
-        if move[0].button("Up", width="stretch", disabled=current is None):
-            state.queue(lambda uid=current.uid: state.move_rule(uid, -1))
-        if move[1].button("Down", width="stretch", disabled=current is None):
-            state.queue(lambda uid=current.uid: state.move_rule(uid, 1))
-        if move[2].button("Delete", width="stretch", disabled=current is None):
+        if st.button("Delete selected rule", width="stretch", disabled=current is None):
             state.queue(lambda uid=current.uid: state.delete_rule(uid))
 
         st.divider()
