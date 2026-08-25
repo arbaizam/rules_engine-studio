@@ -49,6 +49,11 @@ def test_native_rule_reorder_preserves_the_project_and_sample_rows():
     assert app.session_state["draft_ruleset"].ruleset_id == "reorder_regression"
     assert app.session_state["sample_frame"].to_dict("records") == [{"marker": "custom-row"}]
     assert app.session_state["draft_ruleset"].ordered_rules()[1].uid == first_rule.uid
+    assert next(metric for metric in app.metric if metric.label == "Runs at").value == "20"
+
+    app.run()
+    assert app.session_state["draft_ruleset"].ordered_rules()[1].uid == first_rule.uid
+    assert next(metric for metric in app.metric if metric.label == "Runs at").value == "20"
 
 
 def test_app_renders_nested_literal_audit_and_hierarchy_controls():
@@ -100,6 +105,7 @@ def test_root_group_renders_direct_tests_before_nested_groups():
 
 def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     """The authoring surface uses one control treatment and offsets root groups."""
+    assert (Path(__file__).parents[1] / "assets" / "fhlbank-topeka.jpg").is_file()
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     styles = next(markdown.value for markdown in app.markdown if "<style>" in markdown.value)
     assert "--studio-navy: #003359;" in styles
@@ -108,6 +114,7 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert "--studio-control-bg: #071E2D;" in styles
     assert "--studio-control-border: #52758F;" in styles
     assert "--studio-control-text: #F8FAFC;" in styles
+    assert "--studio-rule: #058AA8;" in styles
     assert "--studio-group: #93B1CC;" in styles
     assert "--studio-condition: #AAAD00;" in styles
     assert "border: 1px solid var(--studio-control-border)" in styles
@@ -133,6 +140,9 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[data-testid="stTabs"] [role="tab"] p' in styles
     assert "font-size: 1.25rem !important;" in styles
     assert '[data-testid="stDivider"]' in styles
+    assert '[class*="st-key-brand_logo"] img' in styles
+    assert "filter: invert(1) brightness(40) contrast(1.4);" in styles
+    assert "mix-blend-mode: screen;" in styles
     assert '[class*="st-key-rule_node_"]' in styles
     assert "padding-left: 1.5rem;" in styles
     assert '[class*="st-key-group_depth_0_"]' in styles

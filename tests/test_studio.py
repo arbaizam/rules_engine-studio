@@ -16,6 +16,9 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pandas as pd
+import streamlit as st
+
 from studio import authoring, custom_functions, engine, expressions, sample_data, state, yaml_io
 from studio.schema import (
     LITERAL_TYPES,
@@ -34,6 +37,7 @@ from studio.schema import (
     normalize_literal_editor_type,
     referenced_columns,
 )
+from studio.ui import browser_state
 
 
 def field(name: str, *, default: object | None = None) -> Operand:
@@ -680,6 +684,35 @@ def test_demo_rows_use_loan_data_with_structs_arrays_and_dates():
     assert frame.loc[0, "EffectiveDate"] == date(2026, 8, 14)
     assert isinstance(frame.loc[0, "StructColumn"], dict)
     assert isinstance(frame.loc[0, "ArrayColumn"], list)
+
+
+def test_browser_autosave_round_trip_preserves_draft_rows_and_selection(monkeypatch):
+    """Browser recovery must restore authored state without pickle or engine compilation."""
+    draft = sample_data.demo_ruleset()
+    draft.ruleset_id = "browser_recovery"
+    selected = draft.ordered_rules()[2]
+    session = {
+        state.DRAFT: draft,
+        state.SAMPLE: sample_data.demo_frame(),
+        state.SELECTED: selected.uid,
+        state.ACTIONS: [],
+        state.PREFIX: "recovered",
+    }
+    monkeypatch.setattr(st, "session_state", session)
+
+    encoded = browser_state.snapshot_json()
+    state.set_draft(Ruleset(ruleset_id="replacement", rules=[]))
+    state.set_frame(pd.DataFrame([{"temporary": True}]))
+    browser_state.restore_json(encoded)
+
+    assert state.draft().ruleset_id == "browser_recovery"
+    assert state.selected_rule().rule_id == selected.rule_id
+    assert st.session_state[state.PREFIX] == "recovered"
+    assert state.frame().loc[0, "EffectiveDate"] == date(2026, 8, 14)
+    assert isinstance(state.frame().loc[0, "StructColumn"], dict)
+    assert isinstance(state.frame().loc[0, "ArrayColumn"], list)
+    assert yaml_io.validate(state.draft()) == []
+    assert "ruleset_id: browser_recovery" in yaml_io.to_yaml(state.draft())
 
 
 def test_struct_and_array_literals_work_in_conditions_and_assignments():

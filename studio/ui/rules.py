@@ -75,11 +75,7 @@ def _header(rule: Rule) -> None:
     )
 
     flags = st.columns([1, 1, 1, 3])
-    rule.rule_order = int(
-        flags[0].number_input(
-            "Runs at", value=int(rule.rule_order), step=10, key=f"rorder-{rule.uid}"
-        )
-    )
+    flags[0].metric("Runs at", int(rule.rule_order))
     rule.active_flag = flags[1].toggle(
         "Active",
         value=rule.active_flag,

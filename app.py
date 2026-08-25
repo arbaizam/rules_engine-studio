@@ -10,7 +10,7 @@ from __future__ import annotations
 import streamlit as st
 
 from studio import state, yaml_io
-from studio.ui import data, evaluate, rules, yaml_tab
+from studio.ui import browser_state, data, evaluate, reorder, rules, yaml_tab
 
 st.set_page_config(
     page_title="Rules Engine Studio",
@@ -37,7 +37,7 @@ def inject_styles() -> None:
             --studio-border: #456A85;
             --studio-section-border: #52758F;
             --studio-table-border: #7194AE;
-            --studio-rule: #93B1CC;
+            --studio-rule: #058AA8;
             --studio-group: #93B1CC;
             --studio-condition: #AAAD00;
             --studio-assignment: #6D97B8;
@@ -54,6 +54,16 @@ def inject_styles() -> None:
 
         [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
             gap: 0.7rem;
+        }
+
+        [class*="st-key-brand_logo"] {
+            margin-bottom: -0.35rem;
+            max-width: 12rem;
+        }
+
+        [class*="st-key-brand_logo"] img {
+            filter: invert(1) brightness(40) contrast(1.4);
+            mix-blend-mode: screen;
         }
 
         [data-testid="stTextInputRootElement"],
@@ -274,6 +284,8 @@ def sidebar() -> None:
     ruleset = state.draft()
 
     with st.sidebar:
+        with st.container(key="brand_logo"):
+            st.image("assets/fhlbank-topeka.jpg", width="stretch")
         st.markdown("### Rules Engine Studio")
         st.caption("Draft · test · export")
 
@@ -315,8 +327,10 @@ def sidebar() -> None:
                 index for index, rule in enumerate(ordered) if rule.uid == current.uid
             )
             with st.expander("Reorder rules", expanded=False):
+                reorder.render_drag_sorter(ordered)
                 st.caption(
-                    f"Selected: {current.rule_order} · {current.rule_id or 'untitled'}"
+                    f"Or move the selected rule: {current.rule_order} · "
+                    f"{current.rule_id or 'untitled'}"
                 )
                 move = st.columns(2)
                 if move[0].button(
@@ -368,6 +382,9 @@ with tab_eval:
     evaluate.render()
 with tab_yaml:
     yaml_tab.render()
+
+with st.sidebar:
+    browser_state.render()
 
 # Structural edits queued during render are applied here, then the page redraws.
 if state.flush():
