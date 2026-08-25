@@ -92,6 +92,8 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert "--studio-control-bg: #071E2D;" in styles
     assert "--studio-control-border: #52758F;" in styles
     assert "--studio-control-text: #F8FAFC;" in styles
+    assert "--studio-group: #93B1CC;" in styles
+    assert "--studio-condition: #AAAD00;" in styles
     assert "border: 1px solid var(--studio-control-border)" in styles
     assert "background-color: var(--studio-control-bg)" in styles
     assert "-webkit-text-fill-color: var(--studio-control-text)" in styles
@@ -130,6 +132,14 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     )
     assert 'primaryColor = "#AAAD00"' in theme
     assert 'secondaryBackgroundColor = "#003359"' in theme
+
+
+def test_sidebar_rule_labels_do_not_use_a_stop_on_match_glyph():
+    """Stop-on-match is edited in the rule form, not shown as a cryptic square."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+
+    assert not app.exception
+    assert all("⏹" not in button.label for button in app.button)
 
 
 def test_expression_previews_render_and_follow_condition_edits():

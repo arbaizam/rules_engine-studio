@@ -95,8 +95,8 @@ def inject_styles() -> None:
             --studio-section-border: #52758F;
             --studio-table-border: #7194AE;
             --studio-rule: #93B1CC;
-            --studio-group: #AAAD00;
-            --studio-condition: #D2D44A;
+            --studio-group: #93B1CC;
+            --studio-condition: #AAAD00;
             --studio-assignment: #6D97B8;
         }
 
@@ -361,8 +361,6 @@ def sidebar() -> None:
             label = f"{rule.rule_order} · {rule.rule_id or 'untitled'}"
             if not rule.active_flag:
                 label += "  (off)"
-            if rule.stop_on_match:
-                label += "  ⏹"
             if st.button(
                 label,
                 key=f"pick-{rule.uid}",
