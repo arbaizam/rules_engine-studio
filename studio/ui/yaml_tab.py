@@ -12,21 +12,24 @@ from ..schema import Ruleset
 from .widgets import issue_list
 
 
-def render() -> None:
-    """Render production validation and canonical YAML interchange controls."""
+def render(snapshot: yaml_io.YamlSnapshot) -> None:
+    """Render validation and file operations for the shared live YAML snapshot."""
     ruleset = state.draft()
-    issues = yaml_io.validate(ruleset, state.columns())
+    issues = list(snapshot.issues)
 
     st.subheader("Checks")
     issue_list(issues, "Checks")
 
-    st.subheader("Ruleset file")
+    st.subheader("Canonical export")
     document = ""
-    if yaml_io.has_errors(issues):
-        st.warning("Canonical YAML is available after production validation passes.")
+    if not snapshot.exportable:
+        st.warning(
+            "The live draft remains visible in the YAML preview. "
+            "Resolve the errors above to enable its canonical download."
+        )
     else:
-        document = _with_header(yaml_io.to_yaml(ruleset), ruleset)
-        st.code(document, language="yaml")
+        document = _with_header(snapshot.document, ruleset)
+        st.caption("The canonical document is live in the right-side YAML preview.")
 
     cols = st.columns([2, 2, 3])
     cols[0].download_button(
@@ -35,9 +38,9 @@ def render() -> None:
         file_name=f"{ruleset.ruleset_id or 'ruleset'}_{ruleset.version or '0.1.0'}.yaml",
         mime="application/x-yaml",
         type="primary",
-        disabled=yaml_io.has_errors(issues),
+        disabled=not snapshot.exportable,
     )
-    if yaml_io.has_errors(issues):
+    if not snapshot.exportable:
         cols[1].caption("Fix the errors above to enable the download.")
     if cols[2].button("Renumber rules 10, 20, 30…"):
         state.queue(lambda: yaml_io.renumber(state.draft()))

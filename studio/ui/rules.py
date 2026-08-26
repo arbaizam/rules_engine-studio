@@ -74,7 +74,7 @@ def _header(rule: Rule) -> None:
         placeholder="Plain-language summary for whoever reads this next",
     )
 
-    flags = st.columns([1, 1, 1, 3])
+    flags = st.columns([1, 1.5, 2, 1])
     flags[0].metric("Runs at", int(rule.rule_order))
     rule.active_flag = flags[1].toggle(
         "Active",
@@ -119,7 +119,7 @@ def _group(
             f'<div class="studio-node-label">{node_label}</div>',
             unsafe_allow_html=True,
         )
-        head = st.columns([2, 3, 1, 1, 1])
+        head = st.columns([2.2, 3.3, 1.4, 1.7, 1.7])
         group.logical_operator = head[0].selectbox(
             "Match",
             ["all", "any"],
@@ -167,7 +167,7 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
     """Render one canonical condition with operand-level null behavior."""
     with st.container(border=True, key=f"condition_{condition.uid}"):
         st.markdown('<div class="studio-node-label">Condition</div>', unsafe_allow_html=True)
-        meta = st.columns([4, 1, 1, 1])
+        meta = st.columns([3.5, 1.5, 2.5, 1.5])
         condition.condition_id = meta[0].text_input(
             "Condition id",
             value=condition.condition_id,

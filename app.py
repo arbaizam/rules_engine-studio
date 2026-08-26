@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from studio import state, yaml_io
-from studio.ui import browser_state, data, evaluate, reorder, rules, yaml_tab
+from studio import state
+from studio.ui import browser_state, data, evaluate, reorder, rules, yaml_preview, yaml_tab
 
 st.set_page_config(
     page_title="Rules Engine Studio",
@@ -44,6 +44,8 @@ def inject_styles() -> None:
         }
 
         [data-testid="stMainBlockContainer"] {
+            padding-left: 1.25rem !important;
+            padding-right: 1.25rem !important;
             padding-top: 3.5rem !important;
         }
 
@@ -259,6 +261,109 @@ def inject_styles() -> None:
         [class*="st-key-expression_"] {
             margin: 0.35rem 0 0.75rem;
         }
+
+        [class*="st-key-yaml_preview_panel"] {
+            background: var(--studio-panel);
+            border-color: var(--studio-section-border) !important;
+            border-width: 2px !important;
+            position: sticky;
+            top: 3.5rem;
+        }
+
+        [class*="st-key-yaml_preview_header"] h3 {
+            margin: 0;
+            white-space: nowrap;
+        }
+
+        [class*="st-key-yaml_preview_close_button"] button {
+            color: var(--studio-blue) !important;
+            padding-left: 0.55rem;
+            padding-right: 0.55rem;
+        }
+
+        .studio-yaml-status {
+            align-items: center;
+            background: #071E2D;
+            border: 1px solid var(--studio-control-border);
+            border-radius: 999px;
+            color: #D9E5ED;
+            display: flex;
+            font-size: 0.78rem;
+            font-weight: 700;
+            gap: 0.5rem;
+            line-height: 1.2;
+            margin: 0.1rem 0 0.75rem;
+            padding: 0.42rem 0.65rem;
+        }
+
+        .studio-yaml-status span,
+        .studio-yaml-rail-status {
+            border-radius: 50%;
+            display: inline-block;
+            flex: 0 0 auto;
+            height: 0.55rem;
+            width: 0.55rem;
+        }
+
+        .studio-yaml-status.ready span,
+        .studio-yaml-rail-status.ready {
+            background: var(--studio-lime);
+            box-shadow: 0 0 0 3px rgba(170, 173, 0, 0.18);
+        }
+
+        .studio-yaml-status.blocked span,
+        .studio-yaml-rail-status.blocked {
+            background: #FF806B;
+            box-shadow: 0 0 0 3px rgba(255, 128, 107, 0.18);
+        }
+
+        [class*="st-key-yaml_preview_panel"] [data-testid="stCode"] {
+            border: 1px solid var(--studio-control-border);
+            border-radius: 0.55rem;
+        }
+
+        [class*="st-key-yaml_preview_rail"] {
+            align-items: center;
+            background: var(--studio-panel);
+            border: 2px solid var(--studio-section-border);
+            border-radius: 0.55rem;
+            display: flex;
+            flex-direction: column;
+            min-height: 14rem;
+            position: sticky;
+            top: 3.5rem;
+        }
+
+        [class*="st-key-yaml_preview_rail"] [data-testid="stButton"] {
+            flex: 1 1 auto;
+            width: 100%;
+        }
+
+        [class*="st-key-yaml_preview_rail"] [data-testid="stButton"] button {
+            height: 100%;
+            min-height: 11.5rem;
+            padding: 0.6rem 0.2rem;
+        }
+
+        [class*="st-key-yaml_preview_rail"] [data-testid="stButton"] button p {
+            font-size: 0.8rem;
+            font-weight: 800;
+            letter-spacing: 0.12em;
+            transform: rotate(180deg);
+            writing-mode: vertical-rl;
+        }
+
+        .studio-yaml-rail-status {
+            margin: 0.65rem auto;
+        }
+
+        @media (max-width: 1050px) {
+            [class*="st-key-yaml_preview_panel"],
+            [class*="st-key-yaml_preview_rail"] {
+                position: relative;
+                top: auto;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -269,8 +374,8 @@ inject_styles()
 state.init()
 
 
-def sidebar() -> None:
-    """Render ruleset metadata, navigation, and validation status."""
+def sidebar():
+    """Render ruleset metadata and navigation, returning its status placeholder."""
     ruleset = state.draft()
 
     with st.sidebar:
@@ -336,37 +441,51 @@ def sidebar() -> None:
         st.session_state[state.PREFIX] = st.text_input(
             "Column prefix", value=st.session_state[state.PREFIX]
         )
-        issues = yaml_io.validate(ruleset, state.columns())
-        errors = sum(1 for i in issues if i.severity == "error")
-        if errors:
-            st.error(f"{errors} to fix before export")
-        else:
-            st.success("Ready to export")
+        return st.empty()
 
 
-sidebar()
+sidebar_status = sidebar()
+yaml_preview.init()
+workspace, yaml_rail = yaml_preview.workspace_columns()
 
-tab_rules, tab_data, tab_eval, tab_yaml = st.tabs(
-    ["Rules", "Sample data", "Evaluate", "YAML"],
-    key="studio_tab",
-    on_change="rerun",
-)
+snapshot = None
+with workspace:
+    tab_rules, tab_data, tab_eval, tab_yaml = st.tabs(
+        ["Rules", "Sample data", "Evaluate", "YAML"],
+        key="studio_tab",
+        on_change="rerun",
+    )
 
-# Tracked tabs expose which panel is open, so hidden views can stay dormant.
-# This is important here: evaluation, data-editor transport, and YAML export can
-# each dominate the latency of an otherwise small authoring edit.
-if tab_rules.open:
-    with tab_rules:
-        rules.render()
-elif tab_data.open:
-    with tab_data:
-        data.render()
-elif tab_eval.open:
-    with tab_eval:
-        evaluate.render()
-elif tab_yaml.open:
-    with tab_yaml:
-        yaml_tab.render()
+    # Tracked tabs expose which panel is open, so hidden views can stay dormant.
+    # YAML is the exception: one cached snapshot feeds the preview, validation,
+    # and export state without independently recompiling each surface.
+    if tab_rules.open:
+        with tab_rules:
+            rules.render()
+    elif tab_data.open:
+        with tab_data:
+            data.render()
+    elif tab_eval.open:
+        with tab_eval:
+            evaluate.render()
+    elif tab_yaml.open:
+        snapshot = yaml_preview.current_snapshot()
+        with tab_yaml:
+            yaml_tab.render(snapshot)
+
+if snapshot is None:
+    # Authoring widgets above mutate the model during render. Taking the
+    # snapshot afterward makes the adjacent YAML reflect that same interaction.
+    snapshot = yaml_preview.current_snapshot()
+
+with yaml_rail:
+    yaml_preview.render(snapshot)
+
+with sidebar_status.container():
+    if snapshot.error_count:
+        st.error(f"{snapshot.error_count} to fix before export")
+    else:
+        st.success("Ready to export")
 
 with st.sidebar:
     browser_state.render()

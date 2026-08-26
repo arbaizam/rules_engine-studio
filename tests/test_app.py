@@ -19,6 +19,7 @@ from streamlit.testing.v1 import AppTest
 from studio import state
 from studio.schema import Condition, ConditionGroup
 from studio.ui.evaluate import _operand_struct_rows, _struct_rows
+from studio.ui.yaml_preview import OPEN as YAML_PREVIEW_OPEN
 
 
 def select_rule(app: AppTest, rule_order: int) -> None:
@@ -66,6 +67,44 @@ def test_app_renders_function_contracts_and_lazy_upload_views():
     open_tab(app, "YAML")
     assert [uploader.label for uploader in app.get("file_uploader")] == ["YAML file"]
     assert not app.radio
+
+
+def test_live_yaml_preview_follows_rule_edits_and_collapses_to_a_status_rail():
+    """The right preview stays live and preserves its session-level display preference."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+
+    assert not app.exception
+    assert app.session_state[YAML_PREVIEW_OPEN] is True
+    assert "ruleset_id:" in app.code[0].value
+    assert any("Canonical YAML · Live" in markdown.value for markdown in app.markdown)
+
+    rule_id = next(field for field in app.text_input if field.label == "Rule id")
+    rule_id.set_value("live_yaml_rule")
+    app.run()
+
+    assert not app.exception
+    assert "rule_id: live_yaml_rule" in app.code[0].value
+
+    next(button for button in app.button if button.key == "yaml_preview_close_button").click()
+    app.run()
+
+    assert not app.exception
+    assert app.session_state[YAML_PREVIEW_OPEN] is False
+    assert not app.code
+    assert any(button.key == "yaml_preview_open_button" for button in app.button)
+
+
+def test_live_yaml_preview_remains_visible_while_the_draft_is_invalid():
+    """A transient compiler error must not blank the adjacent source preview."""
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
+    rule_id = next(field for field in app.text_input if field.label == "Rule id")
+    rule_id.set_value("")
+    app.run()
+
+    assert not app.exception
+    assert app.code
+    assert "rule_id: ''" in app.code[0].value
+    assert any("Not exportable" in markdown.value for markdown in app.markdown)
 
 
 def test_native_rule_reorder_preserves_the_project_and_sample_rows():
@@ -198,6 +237,8 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[data-testid="stExpander"] > details' in styles
     assert '[data-testid="stTabs"] [role="tablist"]' in styles
     assert '[data-testid="stMainBlockContainer"]' in styles
+    assert "padding-left: 1.25rem !important;" in styles
+    assert "padding-right: 1.25rem !important;" in styles
     assert "padding-top: 3.5rem !important;" in styles
     assert '[data-testid="stTabs"] [role="tab"] p' in styles
     assert "font-size: 1.25rem !important;" in styles
@@ -211,6 +252,9 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[class*="st-key-expression_"]' in styles
     assert "margin: 0.35rem 0 0.75rem;" in styles
     assert ".studio-expression-preview" not in styles
+    assert '[class*="st-key-yaml_preview_panel"]' in styles
+    assert '[class*="st-key-yaml_preview_rail"]' in styles
+    assert ".studio-yaml-status.ready span" in styles
 
     theme = (Path(__file__).parents[1] / ".streamlit" / "config.toml").read_text(
         encoding="utf-8"

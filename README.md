@@ -27,6 +27,8 @@ and evaluation.
   with `SparkRowEvaluator`, the production worker-side row implementation.
 - Import and export YAML through `YamlRulesetCompiler` and
   `YamlRulesetExporter`.
+- Watch a collapsible, read-only YAML preview update beside the active editor,
+  including best-effort draft syntax while production validation is blocked.
 - Validate through `RulesetValidator` before export.
 
 ## Run locally
@@ -52,6 +54,7 @@ remain explicit downloads.
 | `studio/yaml_io.py` | Production compiler, exporter, and validator adapter |
 | `studio/ui/` | Streamlit authoring and test views |
 | `studio/ui/reorder.py` | Integrated mouse, touch, and keyboard rule sorter |
+| `studio/ui/yaml_preview.py` | Cached live YAML snapshot and collapsible right-side preview |
 | `studio/ui/browser_state.py` | Strict-JSON browser-local working-draft recovery |
 | `studio/sample_data.py` | Valid starter ruleset and representative rows |
 | `tests/test_studio.py` | Contract, registry, YAML, CSV, and runtime tests |

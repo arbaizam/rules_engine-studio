@@ -528,6 +528,33 @@ def test_yaml_round_trip_uses_canonical_compiler_and_exporter():
     assert "assignments:" not in text
 
 
+def test_live_yaml_snapshot_reuses_canonical_export_and_nonblocking_warnings():
+    """The live preview must match export while retaining sample-data diagnostics."""
+    draft = sample_data.demo_ruleset()
+    snapshot = yaml_io.build_snapshot(draft, columns=["employee_id"])
+
+    assert snapshot.compiled is True
+    assert snapshot.exportable is True
+    assert snapshot.error_count == 0
+    assert snapshot.document == yaml_io.to_yaml(draft)
+    assert {issue.check_name for issue in snapshot.issues} == {"TEST_DATA_FIELD_MISSING"}
+
+
+def test_live_yaml_snapshot_survives_a_compiler_rejected_draft():
+    """Temporarily invalid authoring must leave a readable, non-exportable preview."""
+    draft = sample_data.demo_ruleset()
+    condition = next(draft.rules[0].conditions.walk_conditions())
+    condition.operator = "not_a_real_operator"
+
+    snapshot = yaml_io.build_snapshot(draft)
+
+    assert snapshot.compiled is False
+    assert snapshot.exportable is False
+    assert snapshot.error_count == 1
+    assert "operator: not_a_real_operator" in snapshot.document
+    assert snapshot.issues[0].check_name == "RULESET_COMPILATION_FAILED"
+
+
 def test_production_validator_reports_unknown_custom_function():
     """Function names are validated against the authoritative registry."""
     draft = ruleset(
