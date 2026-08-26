@@ -307,6 +307,20 @@ def inject_styles() -> None:
             margin-bottom: 0;
         }
 
+        [class*="st-key-delete_selected_rule"] button,
+        [class*="st-key-delete_selected_rule"] button:hover,
+        [class*="st-key-delete_selected_rule"] button:active,
+        [class*="st-key-delete_selected_rule"] button:focus-visible,
+        [class*="st-key-delete_selected_rule"] button:disabled {
+            background-color: #9A0000 !important;
+            border-color: #9A0000 !important;
+            color: #FFFFFF !important;
+        }
+
+        [class*="st-key-delete_selected_rule"] button p {
+            color: #FFFFFF !important;
+        }
+
         [class*="st-key-expression_"] {
             margin: 0.35rem 0 0.75rem;
         }
@@ -518,7 +532,12 @@ def sidebar():
         if add[1].button("Duplicate", width="stretch", disabled=current is None):
             state.queue(lambda uid=current.uid: state.duplicate_rule(uid))
 
-        if st.button("Delete selected rule", width="stretch", disabled=current is None):
+        if st.button(
+            "Delete selected rule",
+            key="delete_selected_rule",
+            width="stretch",
+            disabled=current is None,
+        ):
             state.queue(lambda uid=current.uid: state.delete_rule(uid))
 
         st.divider()

@@ -8,14 +8,14 @@ boundary without requiring a browser or network connection.
 from pathlib import Path
 
 import pandas as pd
+from streamlit.testing.v1 import AppTest
+
 from rules_engine.spark_runtime import (
     ASSIGNMENT_RESULT_STRUCT,
     CONDITION_TRACE_STRUCT,
     MATCHED_RULE_TRACE_STRUCT,
     OPERAND_TRACE_STRUCT,
 )
-from streamlit.testing.v1 import AppTest
-
 from studio import sample_data, state, yaml_io
 from studio.schema import Condition, ConditionGroup
 from studio.ui import yaml_preview
@@ -282,6 +282,9 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert "font-size: 1.5rem !important;" in styles
     assert '[class*="st-key-condition-footer-"]' in styles
     assert "white-space: nowrap;" in styles
+    assert '[class*="st-key-delete_selected_rule"] button' in styles
+    assert "background-color: #9A0000 !important;" in styles
+    assert "color: #FFFFFF !important;" in styles
 
     theme = (Path(__file__).parents[1] / ".streamlit" / "config.toml").read_text(
         encoding="utf-8"
