@@ -237,16 +237,16 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
                 if spec is not None and spec.hint:
                     st.caption(spec.hint)
 
-        footer = st.columns([6, 1], vertical_alignment="bottom")
-        with footer[0]:
-            _expression_expander(
-                f"Condition expression · {condition.condition_id or 'Untitled condition'}",
-                "Matches when",
-                expressions.condition_expression(condition),
-                key=f"condition_{condition.uid}",
-            )
-        with footer[1]:
-            with st.container(key=f"condition-footer-{condition.uid}"):
+        with st.container(key=f"condition-footer-{condition.uid}"):
+            footer = st.columns([6, 1], vertical_alignment="center")
+            with footer[0]:
+                _expression_expander(
+                    f"Condition expression · {condition.condition_id or 'Untitled condition'}",
+                    "Matches when",
+                    expressions.condition_expression(condition),
+                    key=f"condition_{condition.uid}",
+                )
+            with footer[1]:
                 if st.button("Remove", key=f"cdel-{condition.uid}", width="stretch"):
                     state.queue(lambda p=parent, c=condition: p.children.remove(c))
 
@@ -296,7 +296,7 @@ def _assignments(rule: Rule, columns: Sequence[str]) -> None:
                 value=assignment.assignment_id,
                 key=f"aid-{assignment.uid}",
             )
-            cols = st.columns([2, 4, 1])
+            cols = st.columns([2, 4])
             with cols[0]:
                 assignment.target_field = st.text_input(
                     "Field to set",
@@ -313,18 +313,20 @@ def _assignments(rule: Rule, columns: Sequence[str]) -> None:
                     assigned=assigned_fields(state.draft()),
                     in_assignment=True,
                 )
-            with cols[2]:
-                st.markdown("&nbsp;", unsafe_allow_html=True)
-                if st.button("Remove", key=f"adel-{assignment.uid}"):
-                    state.queue(lambda r=rule, a=assignment: r.assignments.remove(a))
 
-            _expression_expander(
-                f"Assignment expression · "
-                f"{assignment.assignment_id or 'Untitled assignment'}",
-                "Sets on match",
-                expressions.assignment_expression(assignment),
-                key=f"assignment_{assignment.uid}",
-            )
+            with st.container(key=f"assignment-footer-{assignment.uid}"):
+                footer = st.columns([6, 1], vertical_alignment="center")
+                with footer[0]:
+                    _expression_expander(
+                        f"Assignment expression · "
+                        f"{assignment.assignment_id or 'Untitled assignment'}",
+                        "Sets on match",
+                        expressions.assignment_expression(assignment),
+                        key=f"assignment_{assignment.uid}",
+                    )
+                with footer[1]:
+                    if st.button("Remove", key=f"adel-{assignment.uid}", width="stretch"):
+                        state.queue(lambda r=rule, a=assignment: r.assignments.remove(a))
 
     if st.button("Add assignment", key=f"aadd-{rule.uid}"):
         state.queue(lambda r=rule: r.assignments.append(Assignment(value=Operand())))

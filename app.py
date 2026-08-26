@@ -224,14 +224,23 @@ def inject_styles() -> None:
             gap: 0.7rem;
         }
 
-        [class*="st-key-condition-footer-"] [data-testid="stButton"] button {
+        [class*="st-key-condition-footer-"] [data-testid="stButton"] button,
+        [class*="st-key-assignment-footer-"] [data-testid="stButton"] button {
             padding-left: 0.4rem;
             padding-right: 0.4rem;
             width: 100%;
         }
 
-        [class*="st-key-condition-footer-"] [data-testid="stButton"] button p {
+        [class*="st-key-condition-footer-"] [data-testid="stButton"] button p,
+        [class*="st-key-assignment-footer-"] [data-testid="stButton"] button p {
             white-space: nowrap;
+        }
+
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-condition-footer-"])
+            [class*="st-key-expression_"],
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-assignment-footer-"])
+            [class*="st-key-expression_"] {
+            margin: 0;
         }
 
         [class*="st-key-assignment_"] {
