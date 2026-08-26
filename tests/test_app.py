@@ -8,10 +8,17 @@ boundary without requiring a browser or network connection.
 from pathlib import Path
 
 import pandas as pd
+from rules_engine.spark_runtime import (
+    ASSIGNMENT_RESULT_STRUCT,
+    CONDITION_TRACE_STRUCT,
+    MATCHED_RULE_TRACE_STRUCT,
+    OPERAND_TRACE_STRUCT,
+)
 from streamlit.testing.v1 import AppTest
 
 from studio import state
 from studio.schema import Condition, ConditionGroup
+from studio.ui.evaluate import _operand_struct_rows, _struct_rows
 
 
 def select_rule(app: AppTest, rule_order: int) -> None:
@@ -105,6 +112,34 @@ def test_app_renders_nested_literal_audit_and_hierarchy_controls():
     open_tab(app, "Rules")
     select_rule(app, 30)
     assert any("Nested group" in markdown.value for markdown in app.markdown)
+
+
+def test_full_audit_ui_projects_every_production_struct_field():
+    """The structured audit view stays complete as the production schemas evolve."""
+    for struct in (
+        MATCHED_RULE_TRACE_STRUCT,
+        CONDITION_TRACE_STRUCT,
+        ASSIGNMENT_RESULT_STRUCT,
+    ):
+        payload = {field.name: f"value:{field.name}" for field in struct.fields}
+        rows = _struct_rows(payload, struct)
+
+        assert [row["field"] for row in rows] == struct.fieldNames()
+        assert [row["Spark type"] for row in rows] == [
+            field.dataType.simpleString() for field in struct.fields
+        ]
+
+    left = {field.name: f"left:{field.name}" for field in OPERAND_TRACE_STRUCT.fields}
+    right = {field.name: f"right:{field.name}" for field in OPERAND_TRACE_STRUCT.fields}
+    operand_rows = _operand_struct_rows(left, right)
+
+    assert [row["field"] for row in operand_rows] == OPERAND_TRACE_STRUCT.fieldNames()
+    assert [row["left"] for row in operand_rows] == [
+        f"left:{field.name}" for field in OPERAND_TRACE_STRUCT.fields
+    ]
+    assert [row["right"] for row in operand_rows] == [
+        f"right:{field.name}" for field in OPERAND_TRACE_STRUCT.fields
+    ]
 
 
 def test_root_group_renders_direct_tests_before_nested_groups():

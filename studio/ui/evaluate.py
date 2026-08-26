@@ -7,6 +7,12 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from rules_engine.spark_runtime import (
+    ASSIGNMENT_RESULT_STRUCT,
+    CONDITION_TRACE_STRUCT,
+    MATCHED_RULE_TRACE_STRUCT,
+    OPERAND_TRACE_STRUCT,
+)
 
 from .. import engine, state
 from ..schema import Assignment, Condition, Rule
@@ -247,7 +253,7 @@ def _plain_assignment_table(assignments: dict[str, Any]) -> None:
 
 
 def _full_audit(result: dict[str, Any]) -> None:
-    """Render the production full-audit trace without reinterpreting it."""
+    """Render every field in the production full-audit structs."""
     st.markdown("#### Full audit")
     identity = result.get("ruleset") or {}
     identity_columns = st.columns([2, 1, 4])
@@ -257,57 +263,130 @@ def _full_audit(result: dict[str, Any]) -> None:
         f"**Content hash**  `{identity.get('content_hash', '—')}` · "
         f"engine `{result.get('engine_version', '—')}`"
     )
+    st.caption(
+        "Struct fields and Spark types below come directly from the production "
+        "rules-engine audit schema."
+    )
 
     st.markdown("**Matched rule trace**")
     matched_rules = result.get("matched_rules") or []
     if not matched_rules:
         st.caption("No rule matched this row.")
     for matched_rule in matched_rules:
-        label = (
-            f"{matched_rule['rule_order']} · {matched_rule['rule_id']} · "
-            f"{len(matched_rule.get('conditions') or [])} conditions"
-        )
-        with st.expander(label, expanded=True):
-            st.markdown(matched_rule.get("explanation") or "No explanation emitted.")
-            applied = matched_rule.get("assignments_applied") or []
-            st.caption("Assignments applied: " + (", ".join(applied) or "none"))
-            condition_rows = []
-            for condition in matched_rule.get("conditions") or []:
-                left = condition.get("left") or {}
-                right = condition.get("right") or {}
-                condition_rows.append(
-                    {
-                        "group": condition.get("condition_group_id"),
-                        "condition": condition.get("condition_id"),
-                        "passed": condition.get("passed"),
-                        "left": left.get("value"),
-                        "operator": condition.get("operator"),
-                        "right": right.get("value"),
-                        "comparison": condition.get("comparison_result"),
-                        "source columns": ", ".join(condition.get("columns") or []),
-                    }
-                )
-            st.dataframe(pd.DataFrame(condition_rows), width="stretch", hide_index=True)
-            st.caption("Resolved operand trace")
-            st.json(_jsonable(matched_rule.get("conditions") or []), expanded=False)
+        _matched_rule_struct(matched_rule)
 
     st.markdown("**Assignment provenance**")
     assignment_results = result.get("assignment_results") or []
     if assignment_results:
-        st.dataframe(pd.DataFrame(assignment_results), width="stretch", hide_index=True)
+        _assignment_structs(assignment_results)
     else:
         st.caption("No assignments were applied.")
     with st.expander("Raw full-audit payload", expanded=False):
         st.json(
             _jsonable(
                 {
-                    "matched_rules": matched_rules,
-                    "assignment_results": assignment_results,
-                    "ruleset": identity,
-                    "engine_version": result.get("engine_version"),
+                    field_name: result.get(field_name)
+                    for field_name in engine.result_fields(full_audit=True)
                 }
             )
         )
+
+
+def _matched_rule_struct(matched_rule: dict[str, Any]) -> None:
+    """Render one matched-rule struct and all of its condition structs."""
+    label = (
+        f"{matched_rule.get('rule_order', '—')} · {matched_rule.get('rule_id', '—')} · "
+        f"{len(matched_rule.get('conditions') or [])} conditions"
+    )
+    with st.expander(label, expanded=True):
+        st.markdown("**Rule struct**")
+        _struct_table(
+            matched_rule,
+            MATCHED_RULE_TRACE_STRUCT,
+            exclude={"conditions"},
+        )
+        conditions = matched_rule.get("conditions") or []
+        st.markdown("**`conditions` · Condition structs**")
+        if not conditions:
+            st.caption("No condition traces were emitted.")
+        for condition in conditions:
+            _condition_struct(condition)
+
+
+def _condition_struct(condition: dict[str, Any]) -> None:
+    """Render one condition struct and both complete operand structs."""
+    outcome = "passed" if condition.get("passed") else "failed"
+    label = f"{condition.get('condition_id', '—')} · {outcome}"
+    with st.container(border=True):
+        st.markdown(f"**Condition struct · `{label}`**")
+        _struct_table(
+            condition,
+            CONDITION_TRACE_STRUCT,
+            exclude={"left", "right"},
+        )
+        st.markdown("**`left` and `right` · Resolved operand structs**")
+        left = condition.get("left") or {}
+        right = condition.get("right") or {}
+        rows = _operand_struct_rows(left, right)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
+def _assignment_structs(assignments: list[dict[str, Any]]) -> None:
+    """Render every assignment-result struct field as an ordered audit event."""
+    for assignment in assignments:
+        disposition = "effective" if assignment.get("effective") else "overridden"
+        label = (
+            f"{assignment.get('rule_order', '—')} · "
+            f"{assignment.get('target_field', '—')} · {disposition}"
+        )
+        with st.expander(label, expanded=True):
+            _struct_table(assignment, ASSIGNMENT_RESULT_STRUCT)
+
+
+def _struct_table(
+    payload: dict[str, Any],
+    struct: Any,
+    *,
+    exclude: set[str] | None = None,
+) -> None:
+    """Render scalar struct fields in declared production-schema order."""
+    rows = _struct_rows(payload, struct, exclude=exclude)
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+
+def _struct_rows(
+    payload: dict[str, Any],
+    struct: Any,
+    *,
+    exclude: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Project a payload through one production struct without losing null fields."""
+    excluded = exclude or set()
+    return [
+        {
+            "field": field.name,
+            "Spark type": field.dataType.simpleString(),
+            "value": _cell(payload.get(field.name)),
+        }
+        for field in struct.fields
+        if field.name not in excluded
+    ]
+
+
+def _operand_struct_rows(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Project both operand payloads through the complete operand struct."""
+    return [
+        {
+            "field": field.name,
+            "Spark type": field.dataType.simpleString(),
+            "left": _cell(left.get(field.name)),
+            "right": _cell(right.get(field.name)),
+        }
+        for field in OPERAND_TRACE_STRUCT.fields
+    ]
 
 
 def _cell(value: Any) -> Any:
