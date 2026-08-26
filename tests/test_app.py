@@ -21,8 +21,14 @@ def select_rule(app: AppTest, rule_order: int) -> None:
     app.run()
 
 
-def test_app_renders_all_function_contracts_and_upload_controls():
-    """The rendered app exposes every function and both data/YAML uploaders."""
+def open_tab(app: AppTest, label: str) -> None:
+    """Select one tracked tab and run only that view."""
+    app.session_state["studio_tab"] = label
+    app.run()
+
+
+def test_app_renders_function_contracts_and_lazy_upload_views():
+    """Each tracked tab exposes its own controls without rendering hidden views."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     assert not app.exception
     reorder = next(expander for expander in app.expander if expander.label == "Reorder rules")
@@ -35,7 +41,24 @@ def test_app_renders_all_function_contracts_and_upload_controls():
     assert len(function.options) == 58
     assert "decimal_safe_divide" in function.options
     assert "last_business_day_of_month" in function.options
-    assert len(app.get("file_uploader")) == 2
+    assert not app.get("file_uploader")
+    assert not app.radio
+
+    open_tab(app, "Sample data")
+    assert [uploader.label for uploader in app.get("file_uploader")] == [
+        "CSV, TSV, JSON or Parquet"
+    ]
+    assert not app.radio
+
+    open_tab(app, "Evaluate")
+    assert not app.get("file_uploader")
+    assert next(radio for radio in app.radio if radio.label == "Result detail").value == (
+        "Full audit"
+    )
+
+    open_tab(app, "YAML")
+    assert [uploader.label for uploader in app.get("file_uploader")] == ["YAML file"]
+    assert not app.radio
 
 
 def test_native_rule_reorder_preserves_the_project_and_sample_rows():
@@ -72,11 +95,14 @@ def test_app_renders_nested_literal_audit_and_hierarchy_controls():
     }
     assert {"array", "struct"} <= literal_types
     assert {area.label for area in app.text_area} >= {"JSON array", "JSON object"}
+
+    open_tab(app, "Evaluate")
     assert (
         next(radio for radio in app.radio if radio.label == "Result detail").value == "Full audit"
     )
     assert any(markdown.value == "#### Full audit" for markdown in app.markdown)
 
+    open_tab(app, "Rules")
     select_rule(app, 30)
     assert any("Nested group" in markdown.value for markdown in app.markdown)
 
@@ -107,7 +133,6 @@ def test_root_group_renders_direct_tests_before_nested_groups():
 
 def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     """The authoring surface uses one control treatment and offsets root groups."""
-    assert (Path(__file__).parents[1] / "assets" / "fhlbank-topeka.jpg").is_file()
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     styles = next(markdown.value for markdown in app.markdown if "<style>" in markdown.value)
     assert "--studio-navy: #003359;" in styles
@@ -142,9 +167,6 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[data-testid="stTabs"] [role="tab"] p' in styles
     assert "font-size: 1.25rem !important;" in styles
     assert '[data-testid="stDivider"]' in styles
-    assert '[class*="st-key-brand_logo"] img' in styles
-    assert "filter: invert(1) brightness(40) contrast(1.4);" in styles
-    assert "mix-blend-mode: screen;" in styles
     assert '[class*="st-key-rule_node_"]' in styles
     assert "padding-left: 1.5rem;" in styles
     assert '[class*="st-key-group_depth_0_"]' in styles

@@ -56,16 +56,6 @@ def inject_styles() -> None:
             gap: 0.7rem;
         }
 
-        [class*="st-key-brand_logo"] {
-            margin-bottom: -0.35rem;
-            max-width: 12rem;
-        }
-
-        [class*="st-key-brand_logo"] img {
-            filter: invert(1) brightness(40) contrast(1.4);
-            mix-blend-mode: screen;
-        }
-
         [data-testid="stTextInputRootElement"],
         [data-testid="stNumberInputContainer"],
         [data-testid="stTextAreaRootElement"],
@@ -284,8 +274,6 @@ def sidebar() -> None:
     ruleset = state.draft()
 
     with st.sidebar:
-        with st.container(key="brand_logo"):
-            st.image("assets/fhlbank-topeka.jpg", width="stretch")
         st.markdown("### Rules Engine Studio")
         st.caption("Draft · test · export")
 
@@ -358,16 +346,27 @@ def sidebar() -> None:
 
 sidebar()
 
-tab_rules, tab_data, tab_eval, tab_yaml = st.tabs(["Rules", "Sample data", "Evaluate", "YAML"])
+tab_rules, tab_data, tab_eval, tab_yaml = st.tabs(
+    ["Rules", "Sample data", "Evaluate", "YAML"],
+    key="studio_tab",
+    on_change="rerun",
+)
 
-with tab_rules:
-    rules.render()
-with tab_data:
-    data.render()
-with tab_eval:
-    evaluate.render()
-with tab_yaml:
-    yaml_tab.render()
+# Tracked tabs expose which panel is open, so hidden views can stay dormant.
+# This is important here: evaluation, data-editor transport, and YAML export can
+# each dominate the latency of an otherwise small authoring edit.
+if tab_rules.open:
+    with tab_rules:
+        rules.render()
+elif tab_data.open:
+    with tab_data:
+        data.render()
+elif tab_eval.open:
+    with tab_eval:
+        evaluate.render()
+elif tab_yaml.open:
+    with tab_yaml:
+        yaml_tab.render()
 
 with st.sidebar:
     browser_state.render()
