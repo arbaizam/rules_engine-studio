@@ -207,12 +207,20 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
             if condition.operator in {"is_null", "is_not_null"}:
                 condition.error_on_null = False
             if condition.operator in TOLERANCE_OPERATORS:
-                tolerance = st.text_input(
-                    "Tolerance",
-                    value=str(condition.tolerance_abs),
-                    key=f"ctolerance-{condition.uid}",
-                    help="Absolute numeric tolerance applied by this comparison.",
-                )
+                tolerance_row = st.columns([1, 1], gap="small", vertical_alignment="center")
+                with tolerance_row[0]:
+                    tolerance = st.text_input(
+                        "Tolerance",
+                        value=str(condition.tolerance_abs),
+                        key=f"ctolerance-{condition.uid}",
+                        help="Absolute numeric tolerance applied by this comparison.",
+                        label_visibility="collapsed",
+                    )
+                with tolerance_row[1]:
+                    st.markdown(
+                        '<div class="studio-inline-control-label">Tolerance</div>',
+                        unsafe_allow_html=True,
+                    )
                 try:
                     condition.tolerance_abs = Decimal(tolerance)
                 except (InvalidOperation, ValueError):

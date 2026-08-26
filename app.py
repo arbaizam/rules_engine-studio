@@ -293,6 +293,13 @@ def inject_styles() -> None:
             white-space: pre-wrap;
         }
 
+        .studio-inline-control-label {
+            color: var(--studio-control-text);
+            font-size: 0.875rem;
+            line-height: 1.25rem;
+            white-space: nowrap;
+        }
+
         [class*="st-key-expression_"] {
             margin: 0.35rem 0 0.75rem;
         }
