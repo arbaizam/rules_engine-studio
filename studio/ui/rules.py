@@ -167,7 +167,7 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
     """Render one canonical condition with operand-level null behavior."""
     with st.container(border=True, key=f"condition_{condition.uid}"):
         st.markdown('<div class="studio-node-label">Condition</div>', unsafe_allow_html=True)
-        meta = st.columns([3.5, 1.5, 2.5, 1.5])
+        meta = st.columns([4, 1.25, 1.75])
         condition.condition_id = meta[0].text_input(
             "Condition id",
             value=condition.condition_id,
@@ -183,18 +183,8 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
             key=f"cerrornull-{condition.uid}",
             disabled=condition.operator in {"is_null", "is_not_null"},
         )
-        if condition.operator in TOLERANCE_OPERATORS:
-            tolerance = meta[3].text_input(
-                "Tolerance",
-                value=str(condition.tolerance_abs),
-                key=f"ctolerance-{condition.uid}",
-            )
-            try:
-                condition.tolerance_abs = Decimal(tolerance)
-            except (InvalidOperation, ValueError):
-                st.error("Tolerance must be a finite decimal.")
 
-        cols = st.columns([3, 2, 3, 1])
+        cols = st.columns([3, 2, 3])
 
         with cols[0]:
             operand_editor(
@@ -216,6 +206,17 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
             )
             if condition.operator in {"is_null", "is_not_null"}:
                 condition.error_on_null = False
+            if condition.operator in TOLERANCE_OPERATORS:
+                tolerance = st.text_input(
+                    "Tolerance",
+                    value=str(condition.tolerance_abs),
+                    key=f"ctolerance-{condition.uid}",
+                    help="Absolute numeric tolerance applied by this comparison.",
+                )
+                try:
+                    condition.tolerance_abs = Decimal(tolerance)
+                except (InvalidOperation, ValueError):
+                    st.error("Tolerance must be a finite decimal.")
 
         spec = OPERATORS_BY_NAME.get(condition.operator)
         with cols[2]:
@@ -236,17 +237,18 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
                 if spec is not None and spec.hint:
                     st.caption(spec.hint)
 
-        with cols[3]:
-            st.markdown("&nbsp;", unsafe_allow_html=True)
-            if st.button("Remove", key=f"cdel-{condition.uid}"):
-                state.queue(lambda p=parent, c=condition: p.children.remove(c))
-
-        _expression_expander(
-            f"Condition expression · {condition.condition_id or 'Untitled condition'}",
-            "Matches when",
-            expressions.condition_expression(condition),
-            key=f"condition_{condition.uid}",
-        )
+        footer = st.columns([6, 1], vertical_alignment="bottom")
+        with footer[0]:
+            _expression_expander(
+                f"Condition expression · {condition.condition_id or 'Untitled condition'}",
+                "Matches when",
+                expressions.condition_expression(condition),
+                key=f"condition_{condition.uid}",
+            )
+        with footer[1]:
+            with st.container(key=f"condition-footer-{condition.uid}"):
+                if st.button("Remove", key=f"cdel-{condition.uid}", width="stretch"):
+                    state.queue(lambda p=parent, c=condition: p.children.remove(c))
 
 
 def _expression_expander(label: str, heading: str, expression: str, *, key: str) -> None:

@@ -54,8 +54,20 @@ def inject_styles() -> None:
             border-right: 1px solid var(--studio-border);
         }
 
+        [data-testid="stSidebarHeader"] {
+            margin-bottom: 0 !important;
+        }
+
         [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
             gap: 0.7rem;
+        }
+
+        [class*="st-key-sidebar_brand"] h2 {
+            font-size: 1.5rem !important;
+            font-weight: 800 !important;
+            line-height: 1.2 !important;
+            padding: 0 0 0.15rem !important;
+            white-space: nowrap;
         }
 
         [data-testid="stTextInputRootElement"],
@@ -208,6 +220,20 @@ def inject_styles() -> None:
             background: #0A2436;
         }
 
+        [class*="st-key-condition_"] > div > [data-testid="stVerticalBlock"] {
+            gap: 0.7rem;
+        }
+
+        [class*="st-key-condition-footer-"] [data-testid="stButton"] button {
+            padding-left: 0.4rem;
+            padding-right: 0.4rem;
+            width: 100%;
+        }
+
+        [class*="st-key-condition-footer-"] [data-testid="stButton"] button p {
+            white-space: nowrap;
+        }
+
         [class*="st-key-assignment_"] {
             margin-left: 1rem;
             width: calc(100% - 1rem);
@@ -267,16 +293,16 @@ def inject_styles() -> None:
             border-color: var(--studio-section-border) !important;
             border-width: 2px !important;
             box-sizing: border-box;
-            height: calc(100vh - 2rem);
-            max-height: calc(100vh - 2rem);
+            height: calc(100vh - 5rem);
+            max-height: calc(100vh - 5rem);
             overflow: hidden;
         }
 
         [data-testid="stLayoutWrapper"]:has(> [class*="st-key-yaml_preview_panel"]) {
-            margin-bottom: 3.5rem;
-            margin-top: -3.5rem;
+            margin-bottom: 1rem;
+            margin-top: 0;
             position: sticky;
-            top: 1rem;
+            top: 4rem;
             z-index: 2;
         }
 
@@ -330,7 +356,7 @@ def inject_styles() -> None:
         [class*="st-key-yaml_preview_panel"] [data-testid="stCode"] {
             border: 1px solid var(--studio-control-border);
             border-radius: 0.55rem;
-            height: calc(100vh - 16rem) !important;
+            height: calc(100vh - 17rem) !important;
             max-height: none !important;
             min-height: 16rem;
         }
@@ -414,8 +440,9 @@ def sidebar():
     ruleset = state.draft()
 
     with st.sidebar:
-        st.markdown("### Rules Engine Studio")
-        st.caption("Draft · test · export")
+        with st.container(key="sidebar_brand"):
+            st.markdown("## Rules Engine Studio")
+            st.caption("Draft · test · export")
 
         with st.expander("Ruleset details", expanded=False):
             ruleset.ruleset_id = st.text_input("Ruleset id", value=ruleset.ruleset_id)

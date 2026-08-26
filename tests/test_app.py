@@ -273,11 +273,15 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[class*="st-key-yaml_preview_panel"]' in styles
     assert '[class*="st-key-yaml_preview_rail"]' in styles
     assert ".studio-yaml-status.ready span" in styles
-    assert "height: calc(100vh - 2rem);" in styles
+    assert "height: calc(100vh - 5rem);" in styles
     assert '[data-testid="stLayoutWrapper"]:has(' in styles
-    assert "margin-top: -3.5rem;" in styles
-    assert "top: 1rem;" in styles
+    assert "margin-top: 0;" in styles
+    assert "top: 4rem;" in styles
     assert "top: calc(50vh - 7rem);" in styles
+    assert '[class*="st-key-sidebar_brand"] h2' in styles
+    assert "font-size: 1.5rem !important;" in styles
+    assert '[class*="st-key-condition-footer-"]' in styles
+    assert "white-space: nowrap;" in styles
 
     theme = (Path(__file__).parents[1] / ".streamlit" / "config.toml").read_text(
         encoding="utf-8"

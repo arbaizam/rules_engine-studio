@@ -76,7 +76,7 @@ def init() -> None:
 def workspace_columns():
     """Return the authoring workspace and its expanded panel or collapsed rail."""
     init()
-    widths = [5, 2] if st.session_state[OPEN] else [30, 1]
+    widths = [13, 6] if st.session_state[OPEN] else [30, 1]
     return st.columns(widths, gap="small")
 
 
