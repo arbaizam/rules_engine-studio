@@ -294,10 +294,17 @@ def inject_styles() -> None:
         }
 
         .studio-inline-control-label {
+            display: flex;
+            min-height: 2.25rem;
+            align-items: center;
             color: var(--studio-control-text);
             font-size: 0.875rem;
             line-height: 1.25rem;
             white-space: nowrap;
+        }
+
+        [data-testid="stMarkdownContainer"]:has(> .studio-inline-control-label) {
+            margin-bottom: 0;
         }
 
         [class*="st-key-expression_"] {
