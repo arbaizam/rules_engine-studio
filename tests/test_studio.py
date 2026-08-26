@@ -533,6 +533,7 @@ def test_yaml_round_trip_uses_canonical_compiler_and_exporter():
     assert "custom_function:" in text
     assert "conditions:" not in text
     assert "assignments:" not in text
+    assert "!!float" not in text
 
 
 def test_live_yaml_snapshot_reuses_canonical_export_and_nonblocking_warnings():

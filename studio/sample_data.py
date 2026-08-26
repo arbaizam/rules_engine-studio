@@ -407,7 +407,7 @@ def demo_ruleset() -> Ruleset:
                             condition_id="condition:non_dscr_risk_review:dti",
                             left=_field("BackEndDTI"),
                             operator="gt",
-                            right=_lit("43", "decimal"),
+                            right=_lit(43, "integer"),
                         ),
                         Condition(
                             condition_id="condition:non_dscr_risk_review:fico",
