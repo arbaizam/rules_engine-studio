@@ -2,12 +2,69 @@
 
 from __future__ import annotations
 
+import re
+
 import streamlit as st
 
 from .. import state, yaml_io
 from ..schema import Ruleset
 
 OPEN = "yaml_preview_open"
+
+_RULE_LINE = re.compile(r"^\s*-\s+rule_id\s*:")
+_SCROLLER_DEFINITION = {
+    "name": "studio_yaml_rule_scroller",
+    "html": '<span class="studio-yaml-scroll-bridge" aria-hidden="true"></span>',
+    "css": """
+        :host {
+            display: none;
+            height: 0;
+            overflow: hidden;
+            width: 0;
+        }
+    """,
+    "js": """
+        export default function ({ parentElement, data }) {
+            const ownerDocument = parentElement.ownerDocument;
+            const targetLine = Math.max(1, Number(data?.line ?? 1));
+            const selectionKey = String(data?.selectionKey ?? "");
+            let cancelled = false;
+
+            const positionPreview = (attempt = 0) => {
+                if (cancelled) return;
+                const panel = ownerDocument.querySelector(
+                    '[class*="st-key-yaml_preview_panel"]'
+                );
+                const codeBlock = panel?.querySelector('[data-testid="stCode"]');
+                const scroller = codeBlock?.querySelector("pre");
+                const code = codeBlock?.querySelector("code");
+                if (!panel || !scroller || !code) {
+                    if (attempt < 12) {
+                        window.requestAnimationFrame(() => positionPreview(attempt + 1));
+                    }
+                    return;
+                }
+
+                const signature = `${selectionKey}:${targetLine}`;
+                if (panel.dataset.yamlRuleAnchor === signature) return;
+                panel.dataset.yamlRuleAnchor = signature;
+                const style = window.getComputedStyle(code);
+                const fontSize = Number.parseFloat(style.fontSize) || 14;
+                const lineHeight = Number.parseFloat(style.lineHeight) || fontSize * 1.5;
+                const offset = Math.max(0, scroller.clientHeight * 0.16);
+                scroller.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - offset);
+            };
+
+            window.requestAnimationFrame(() => positionPreview());
+            return () => {
+                cancelled = true;
+            };
+        }
+    """,
+}
+
+_SCROLLER = None
+_SCROLLER_RUNTIME = None
 
 
 def init() -> None:
@@ -19,7 +76,7 @@ def init() -> None:
 def workspace_columns():
     """Return the authoring workspace and its expanded panel or collapsed rail."""
     init()
-    widths = [3, 1] if st.session_state[OPEN] else [30, 1]
+    widths = [5, 2] if st.session_state[OPEN] else [30, 1]
     return st.columns(widths, gap="small")
 
 
@@ -76,14 +133,61 @@ def render(snapshot: yaml_io.YamlSnapshot) -> None:
             language="yaml",
             line_numbers=True,
             wrap_lines=False,
-            height=480,
+            height="stretch",
         )
+        _scroll_to_selected_rule(snapshot)
         st.caption("Read-only live view · Import and download remain in the YAML tab.")
 
 
 def _set_open(value: bool) -> None:
     """Persist the panel preference for the current browser session."""
     st.session_state[OPEN] = value
+
+
+def _scroller_component():
+    """Register the code-scroll bridge once for each Streamlit runtime."""
+    from streamlit.runtime import Runtime
+
+    global _SCROLLER, _SCROLLER_RUNTIME
+    runtime = Runtime.instance()
+    if _SCROLLER is None or _SCROLLER_RUNTIME is not runtime:
+        _SCROLLER = st.components.v2.component(**_SCROLLER_DEFINITION)
+        _SCROLLER_RUNTIME = runtime
+    return _SCROLLER
+
+
+def _scroll_to_selected_rule(snapshot: yaml_io.YamlSnapshot) -> None:
+    """Align the preview with the selected rule without moving the page itself."""
+    selected = state.selected_rule()
+    if selected is None:
+        return
+    scroller = _scroller_component()
+    scroller(
+        data={
+            "line": _selected_rule_line(snapshot.document, state.draft(), selected.uid),
+            "selectionKey": selected.uid,
+        },
+        key="yaml_preview_rule_scroller",
+        width="content",
+        height="content",
+    )
+
+
+def _selected_rule_line(document: str, ruleset: Ruleset, selected_uid: str) -> int:
+    """Return the one-based YAML line where the selected ordered rule begins."""
+    ordered = ruleset.ordered_rules()
+    selected_index = next(
+        (index for index, rule in enumerate(ordered) if rule.uid == selected_uid),
+        0,
+    )
+    rule_lines = [
+        line_number
+        for line_number, line in enumerate(document.splitlines(), start=1)
+        if _RULE_LINE.match(line)
+    ]
+    if not rule_lines:
+        return 1
+    return rule_lines[min(selected_index, len(rule_lines) - 1)]
 
 
 def _status(snapshot: yaml_io.YamlSnapshot) -> None:

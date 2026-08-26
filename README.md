@@ -28,6 +28,7 @@ and evaluation.
 - Import and export YAML through `YamlRulesetCompiler` and
   `YamlRulesetExporter`.
 - Watch a collapsible, read-only YAML preview update beside the active editor,
+  follow the selected rule, and remain viewport-aligned while authoring,
   including best-effort draft syntax while production validation is blocked.
 - Validate through `RulesetValidator` before export.
 

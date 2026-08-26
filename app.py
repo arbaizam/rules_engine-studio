@@ -266,8 +266,18 @@ def inject_styles() -> None:
             background: var(--studio-panel);
             border-color: var(--studio-section-border) !important;
             border-width: 2px !important;
+            box-sizing: border-box;
+            height: calc(100vh - 2rem);
+            max-height: calc(100vh - 2rem);
+            overflow: hidden;
+        }
+
+        [data-testid="stLayoutWrapper"]:has(> [class*="st-key-yaml_preview_panel"]) {
+            margin-bottom: 3.5rem;
+            margin-top: -3.5rem;
             position: sticky;
-            top: 3.5rem;
+            top: 1rem;
+            z-index: 2;
         }
 
         [class*="st-key-yaml_preview_header"] h3 {
@@ -320,6 +330,14 @@ def inject_styles() -> None:
         [class*="st-key-yaml_preview_panel"] [data-testid="stCode"] {
             border: 1px solid var(--studio-control-border);
             border-radius: 0.55rem;
+            height: calc(100vh - 16rem) !important;
+            max-height: none !important;
+            min-height: 16rem;
+        }
+
+        [class*="st-key-yaml_preview_panel"] [data-testid="stCode"] pre {
+            height: 100% !important;
+            max-height: none !important;
         }
 
         [class*="st-key-yaml_preview_rail"] {
@@ -330,8 +348,12 @@ def inject_styles() -> None:
             display: flex;
             flex-direction: column;
             min-height: 14rem;
+        }
+
+        [data-testid="stLayoutWrapper"]:has(> [class*="st-key-yaml_preview_rail"]) {
             position: sticky;
-            top: 3.5rem;
+            top: calc(50vh - 7rem);
+            z-index: 2;
         }
 
         [class*="st-key-yaml_preview_rail"] [data-testid="stButton"] {
@@ -358,10 +380,23 @@ def inject_styles() -> None:
         }
 
         @media (max-width: 1050px) {
-            [class*="st-key-yaml_preview_panel"],
-            [class*="st-key-yaml_preview_rail"] {
+            [class*="st-key-yaml_preview_panel"] {
+                height: auto;
+                max-height: none;
+            }
+
+            [data-testid="stLayoutWrapper"]:has(> [class*="st-key-yaml_preview_panel"]),
+            [data-testid="stLayoutWrapper"]:has(> [class*="st-key-yaml_preview_rail"]) {
+                margin-bottom: 0;
+                margin-top: 0;
                 position: relative;
                 top: auto;
+                z-index: auto;
+            }
+
+            [class*="st-key-yaml_preview_panel"] [data-testid="stCode"] {
+                height: 30rem !important;
+                min-height: 20rem;
             }
         }
         </style>

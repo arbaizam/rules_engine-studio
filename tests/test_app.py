@@ -16,10 +16,12 @@ from rules_engine.spark_runtime import (
 )
 from streamlit.testing.v1 import AppTest
 
-from studio import state
+from studio import sample_data, state, yaml_io
 from studio.schema import Condition, ConditionGroup
+from studio.ui import yaml_preview
 from studio.ui.evaluate import _operand_struct_rows, _struct_rows
-from studio.ui.yaml_preview import OPEN as YAML_PREVIEW_OPEN
+
+YAML_PREVIEW_OPEN = yaml_preview.OPEN
 
 
 def select_rule(app: AppTest, rule_order: int) -> None:
@@ -105,6 +107,22 @@ def test_live_yaml_preview_remains_visible_while_the_draft_is_invalid():
     assert app.code
     assert "rule_id: ''" in app.code[0].value
     assert any("Not exportable" in markdown.value for markdown in app.markdown)
+
+
+def test_yaml_preview_scroll_anchor_follows_the_selected_ordered_rule():
+    """Rule synchronization must target the selected rule's exported YAML block."""
+    draft = sample_data.demo_ruleset()
+    selected = draft.ordered_rules()[-1]
+    selected.rule_order = 500
+    document = yaml_io.to_yaml(draft)
+
+    line_number = yaml_preview._selected_rule_line(document, draft, selected.uid)
+    anchored_line = document.splitlines()[line_number - 1]
+
+    assert anchored_line.lstrip().startswith("- rule_id:")
+    assert selected.rule_id in anchored_line
+    assert "scroller.scrollTop =" in yaml_preview._SCROLLER_DEFINITION["js"]
+    assert "scroller.clientHeight * 0.16" in yaml_preview._SCROLLER_DEFINITION["js"]
 
 
 def test_native_rule_reorder_preserves_the_project_and_sample_rows():
@@ -255,6 +273,11 @@ def test_app_styles_unify_controls_and_separate_root_groups_from_panels():
     assert '[class*="st-key-yaml_preview_panel"]' in styles
     assert '[class*="st-key-yaml_preview_rail"]' in styles
     assert ".studio-yaml-status.ready span" in styles
+    assert "height: calc(100vh - 2rem);" in styles
+    assert '[data-testid="stLayoutWrapper"]:has(' in styles
+    assert "margin-top: -3.5rem;" in styles
+    assert "top: 1rem;" in styles
+    assert "top: calc(50vh - 7rem);" in styles
 
     theme = (Path(__file__).parents[1] / ".streamlit" / "config.toml").read_text(
         encoding="utf-8"
