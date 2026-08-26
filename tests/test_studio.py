@@ -230,10 +230,17 @@ def test_rule_expressions_compose_conditions_assignments_and_match_behavior():
     assert "[add an assignment]" in expressions.rule_expression(Rule())
 
 
-def test_dependency_pin_targets_authoring_contract_commit():
-    """Deployments must install the engine revision that exposes the manifest."""
-    requirements = (Path(__file__).parents[1] / "requirements.txt").read_text(encoding="utf-8")
-    assert "@667f80d5fa9e660687268d9752b53fbaced2e8f1" in requirements
+def test_vendored_engine_targets_authoring_contract_commit():
+    """Deployments must use the credential-free snapshot with the shared manifest."""
+    project_root = Path(__file__).parents[1]
+    requirements = (project_root / "requirements.txt").read_text(encoding="utf-8")
+    provenance = (project_root / "docs" / "VENDORED_RULES_ENGINE.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "git+https://github.com/arbaizam/rules_engine" not in requirements
+    assert "667f80d5fa9e660687268d9752b53fbaced2e8f1" in provenance
+    assert (project_root / "rules_engine" / "authoring.py").is_file()
     assert authoring.manifest()["manifest_version"] == 1
 
 

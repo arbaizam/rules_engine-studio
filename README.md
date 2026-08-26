@@ -60,8 +60,10 @@ remain explicit downloads.
 | `studio/sample_data.py` | Valid starter ruleset and representative rows |
 | `tests/test_studio.py` | Contract, registry, YAML, CSV, and runtime tests |
 
-The exact `rules_engine` commit used by local and Streamlit Cloud installs is
-pinned in `requirements.txt`.
+The exact `rules_engine` source used by local and Streamlit Cloud installs is
+vendored from a pinned production commit. See
+[`docs/VENDORED_RULES_ENGINE.md`](docs/VENDORED_RULES_ENGINE.md) for provenance
+and upgrade instructions.
 
 CSV checks describe the uploaded sample only. Exact production Spark-schema
 compatibility remains a future integration with a deployed validation endpoint.
