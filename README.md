@@ -20,6 +20,9 @@ and evaluation.
   `custom_function`.
 - Configure operand null defaults, condition tolerances, null errors, active
   flags, assignment IDs, and stop-on-match behavior.
+- Filter operators, fields, literals, functions, and prior assignments using
+  value types inferred from the current sample data. Unknown and mixed columns
+  remain available and are labeled instead of being silently discarded.
 - Select all 58 standard functions from the engine registry and author their
   exact named argument contracts.
 - Upload CSV, TSV, JSON, or Parquet test data and edit it in the browser.
@@ -58,6 +61,7 @@ remain explicit downloads.
 | `studio/ui/yaml_preview.py` | Cached live YAML snapshot and collapsible right-side preview |
 | `studio/ui/browser_state.py` | Strict-JSON browser-local working-draft recovery |
 | `studio/sample_data.py` | Valid starter ruleset and representative rows |
+| `studio/type_compatibility.py` | Sample-value type inference and compatibility filtering |
 | `tests/test_studio.py` | Contract, registry, YAML, CSV, and runtime tests |
 
 The exact `rules_engine` source used by local and Streamlit Cloud installs is
@@ -67,3 +71,9 @@ and upgrade instructions.
 
 CSV checks describe the uploaded sample only. Exact production Spark-schema
 compatibility remains a future integration with a deployed validation endpoint.
+
+The checked-in examples are generated from the same canonical starter project:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\regenerate_examples.py
+```

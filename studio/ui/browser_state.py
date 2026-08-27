@@ -20,6 +20,8 @@ _STORAGE_KEY = "rules-engine-studio:working-draft:v1"
 _COMPONENT_KEY = "browser_autosave_bridge"
 _CHECKED = "_browser_autosave_checked"
 _NOTICE = "_browser_autosave_notice"
+_CLEAR = "_browser_autosave_clear"
+_RESTORE_PENDING = "_browser_autosave_restore_pending"
 _MAX_PAYLOAD_BYTES = 4_000_000
 _TYPE_KEY = "__studio_type__"
 
@@ -51,6 +53,13 @@ _BRIDGE_DEFINITION = {
                         () => setTriggerValue("restore", { payload: saved }),
                         50
                     );
+                    return undefined;
+                } else if (data?.mode === "hold") {
+                    status.textContent = "Recovering browser autosave…";
+                    return undefined;
+                } else if (data?.mode === "clear") {
+                    window.localStorage.removeItem(storageKey);
+                    status.textContent = "Invalid autosave cleared";
                     return undefined;
                 } else {
                     const payload = typeof data?.payload === "string" ? data.payload : "";
@@ -107,9 +116,15 @@ def _pack(value: Any) -> Any:
         return [_pack(item) for item in value]
     if isinstance(value, set):
         return [_pack(item) for item in sorted(value, key=str)]
+    to_list = getattr(value, "tolist", None)
+    if callable(to_list):
+        return _pack(to_list())
     scalar = getattr(value, "item", None)
     if callable(scalar):
-        return _pack(scalar())
+        try:
+            return _pack(scalar())
+        except (TypeError, ValueError):
+            return str(value)
     try:
         return None if bool(pd.isna(value)) else str(value)
     except (TypeError, ValueError):
@@ -187,6 +202,7 @@ def restore_json(encoded: str) -> None:
 def _restore_from_component() -> None:
     """Handle the one-time browser restore trigger for a fresh Python session."""
     st.session_state[_CHECKED] = True
+    st.session_state[_RESTORE_PENDING] = True
     component_state = st.session_state.get(_COMPONENT_KEY, {})
     restore_event = component_state.get("restore") if component_state else None
     if isinstance(restore_event, Mapping):
@@ -194,17 +210,21 @@ def _restore_from_component() -> None:
     else:
         encoded = restore_event
     if not encoded:
+        st.session_state[_RESTORE_PENDING] = False
         return
 
     def restore() -> None:
         try:
             restore_json(str(encoded))
-        except (TypeError, ValueError, json.JSONDecodeError):
+        except Exception:  # noqa: BLE001 - corrupt browser data must never block startup
+            st.session_state[_CLEAR] = True
             st.session_state[_NOTICE] = (
                 "Browser autosave could not be recovered; using demo data."
             )
         else:
             st.session_state[_NOTICE] = "Recovered your browser-autosaved project."
+        finally:
+            st.session_state[_RESTORE_PENDING] = False
 
     state.queue(restore)
 
@@ -212,16 +232,27 @@ def _restore_from_component() -> None:
 def render() -> None:
     """Mount the recovery bridge and surface recovery status in the sidebar."""
     checked = bool(st.session_state.get(_CHECKED, False))
+    clear = bool(st.session_state.pop(_CLEAR, False))
+    restore_pending = bool(st.session_state.get(_RESTORE_PENDING, False))
     payload = ""
-    if checked:
+    if checked and not clear and not restore_pending:
         try:
             payload = snapshot_json()
         except ValueError as exc:
             st.caption(str(exc))
+    mode = (
+        "clear"
+        if clear
+        else "hold"
+        if restore_pending
+        else "save"
+        if checked
+        else "restore"
+    )
     bridge = _bridge_component()
     bridge(
         data={
-            "mode": "save" if checked else "restore",
+            "mode": mode,
             "payload": payload,
             "storageKey": _STORAGE_KEY,
         },

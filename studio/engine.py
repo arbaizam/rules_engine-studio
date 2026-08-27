@@ -11,17 +11,22 @@ semantics of its own.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from pyspark.sql import types as T
-from rules_engine.exceptions import RulesEngineError
-from rules_engine.models import Ruleset as CompiledRuleset
-from rules_engine.runtime import SparkRowEvaluator
-from rules_engine.serializer import DeltaRowSerializer
-from rules_engine.spark_runtime import SparkRulesEngineRuntime
 
 from rules_engine import __version__
+from rules_engine.exceptions import RulesEngineError
+from rules_engine.models import Assignment as CompiledAssignment
+from rules_engine.models import Condition as CompiledCondition
+from rules_engine.models import ConditionGroup as CompiledConditionGroup
+from rules_engine.models import Operand as CompiledOperand
+from rules_engine.models import Rule as CompiledRule
+from rules_engine.models import Ruleset as CompiledRuleset
+from rules_engine.runtime import AssignedValue, SparkRowEvaluator
+from rules_engine.serializer import DeltaRowSerializer
+from rules_engine.spark_runtime import SparkRulesEngineRuntime
 
 from . import authoring
 from .schema import Assignment, Condition, Operand, Rule, Ruleset
@@ -35,6 +40,10 @@ _ENGINE_EXCEPTIONS = (ArithmeticError, KeyError, RulesEngineError, TypeError, Va
 
 class OperandError(Exception):
     """Raised when the production compiler or evaluator rejects an authoring operation."""
+
+
+class FocusedEvaluationSkipped(OperandError):
+    """Raised when an earlier stop-on-match rule prevents a focused evaluation."""
 
 
 @dataclass
@@ -97,6 +106,83 @@ def _runtime() -> SparkRowEvaluator:
     return SparkRowEvaluator.without_repository(authoring.registry())
 
 
+def _focused_rule_context(
+    ruleset: Ruleset,
+    target_rule: Rule,
+    row: Mapping[str, Any],
+    runtime: SparkRowEvaluator,
+) -> tuple[CompiledRule, dict[str, AssignedValue]]:
+    """Compile a rule and reproduce assignments committed before it runs."""
+    compiled = compile_ruleset(ruleset)
+    ordered = tuple(sorted(compiled.rules, key=lambda item: item.rule_order))
+    target_index = next(
+        (index for index, rule in enumerate(ordered) if rule.rule_id == target_rule.rule_id),
+        None,
+    )
+    if target_index is None:
+        raise KeyError(f"Rule {target_rule.rule_id!r} is absent from the current ruleset.")
+    compiled_rule = ordered[target_index]
+    prior_rules = ordered[:target_index]
+    if not prior_rules:
+        return compiled_rule, {}
+
+    context_result = runtime.evaluate_row(
+        replace(compiled, rules=prior_rules),
+        row,
+    )
+    matched_by_id = {
+        rule.rule_id: rule
+        for rule in prior_rules
+        if rule.rule_id in context_result["matched_rule_ids"]
+    }
+    producers: dict[str, tuple[CompiledRule, CompiledAssignment]] = {}
+    for rule_id in context_result["matched_rule_ids"]:
+        prior_rule = matched_by_id[rule_id]
+        for assignment in prior_rule.assignments:
+            producers[assignment.target_field] = (prior_rule, assignment)
+        if prior_rule.stop_on_match:
+            raise FocusedEvaluationSkipped(
+                f"Rule {target_rule.rule_id!r} is not reached because earlier "
+                f"stop-on-match rule {prior_rule.rule_id!r} matched this row."
+            )
+
+    return compiled_rule, {
+        target_field: AssignedValue(
+            value=context_result["assign"][target_field]["value"],
+            rule_id=producer.rule_id,
+            assignment_id=assignment.assignment_id,
+        )
+        for target_field, (producer, assignment) in producers.items()
+    }
+
+
+def _compiled_condition(
+    group: CompiledConditionGroup,
+    condition_id: str,
+) -> tuple[CompiledCondition, CompiledConditionGroup]:
+    """Return a compiled condition and its owning group by identifier."""
+    for condition in group.conditions:
+        if condition.condition_id == condition_id:
+            return condition, group
+    for nested_group in group.groups:
+        try:
+            return _compiled_condition(nested_group, condition_id)
+        except KeyError:
+            continue
+    raise KeyError(f"Condition {condition_id!r} is absent from the selected rule.")
+
+
+def _compiled_assignment(
+    rule: CompiledRule,
+    assignment_id: str,
+) -> CompiledAssignment:
+    """Return a compiled assignment by identifier."""
+    for assignment in rule.assignments:
+        if assignment.assignment_id == assignment_id:
+            return assignment
+    raise KeyError(f"Assignment {assignment_id!r} is absent from the selected rule.")
+
+
 def _temporary_ruleset(rule: Rule) -> Ruleset:
     """Wrap one draft rule in the minimum compilable ruleset metadata."""
     return Ruleset(
@@ -128,6 +214,26 @@ def _compile_operand(operand: Operand):
         assignments=[_temporary_assignment(operand)],
     )
     return compile_ruleset(_temporary_ruleset(probe)).rules[0].assignments[0].value
+
+
+def _resolved_operand(
+    operand: CompiledOperand,
+    row: Mapping[str, Any],
+    runtime: SparkRowEvaluator,
+    assigned_values: Mapping[str, AssignedValue] | None = None,
+) -> Resolution:
+    """Resolve a compiled operand and adapt its production trace for the UI."""
+    resolved = runtime._resolve_operand_resolution(operand, row, assigned_values)
+    trace = dict(resolved.trace)
+    source = str(trace.get("kind") or "operand")
+    detail = str(
+        trace.get("field_name")
+        or trace.get("target_field")
+        or trace.get("function_name")
+        or trace.get("value_type")
+        or source
+    )
+    return Resolution(resolved.value, source, detail, trace=trace)
 
 
 def _probe_condition_group():
@@ -173,25 +279,18 @@ def resolve_operand(
     del functions
     try:
         compiled = _compile_operand(operand)
-        resolved = _runtime()._resolve_operand_resolution(compiled, row)
+        return _resolved_operand(compiled, row, _runtime())
     except _ENGINE_EXCEPTIONS as exc:
         raise OperandError(f"{type(exc).__name__}: {exc}") from exc
-    trace = dict(resolved.trace)
-    source = str(trace.get("kind") or operand.kind)
-    detail = str(
-        trace.get("field_name")
-        or trace.get("target_field")
-        or trace.get("function_name")
-        or trace.get("value_type")
-        or source
-    )
-    return Resolution(resolved.value, source, detail, trace=trace)
 
 
 def evaluate_condition(
     condition: Condition,
     row: dict[str, Any],
     functions: Any | None = None,
+    *,
+    ruleset: Ruleset | None = None,
+    owning_rule: Rule | None = None,
 ) -> dict[str, Any]:
     """
     Evaluate one condition with production comparison and null semantics.
@@ -212,26 +311,44 @@ def evaluate_condition(
         Presentation-ready production condition trace.
     """
     del functions
-    probe = Rule(
-        rule_id="studio_condition_probe",
-        rule_name="Studio condition probe",
-        rule_order=1,
-        conditions=_group_for_condition(condition),
-        assignments=[
-            Assignment(
-                assignment_id="assignment:studio_condition_probe:matched",
-                target_field="matched",
-                value=Operand(kind="literal", value=True, value_type="boolean"),
-            )
-        ],
-    )
     try:
-        compiled_rule = compile_ruleset(_temporary_ruleset(probe)).rules[0]
-        compiled_group = compiled_rule.root_group
-        trace = _runtime()._evaluate_condition(
-            compiled_group.conditions[0],
+        runtime = _runtime()
+        if ruleset is not None and owning_rule is not None:
+            compiled_rule, assigned_values = _focused_rule_context(
+                ruleset,
+                owning_rule,
+                row,
+                runtime,
+            )
+            compiled_condition, compiled_group = _compiled_condition(
+                compiled_rule.root_group,
+                condition.condition_id,
+            )
+        elif ruleset is None and owning_rule is None:
+            probe = Rule(
+                rule_id="studio_condition_probe",
+                rule_name="Studio condition probe",
+                rule_order=1,
+                conditions=_group_for_condition(condition),
+                assignments=[
+                    Assignment(
+                        assignment_id="assignment:studio_condition_probe:matched",
+                        target_field="matched",
+                        value=Operand(kind="literal", value=True, value_type="boolean"),
+                    )
+                ],
+            )
+            compiled_rule = compile_ruleset(_temporary_ruleset(probe)).rules[0]
+            compiled_group = compiled_rule.root_group
+            compiled_condition = compiled_group.conditions[0]
+            assigned_values = None
+        else:
+            raise TypeError("ruleset and owning_rule must be supplied together.")
+        trace = runtime._evaluate_condition(
+            compiled_condition,
             compiled_group,
             row,
+            assigned_values,
         )
     except _ENGINE_EXCEPTIONS as exc:
         raise OperandError(f"{type(exc).__name__}: {exc}") from exc
@@ -262,6 +379,8 @@ def evaluate_rule(
     rule: Rule,
     row: dict[str, Any],
     functions: Any | None = None,
+    *,
+    ruleset: Ruleset | None = None,
 ) -> dict[str, Any]:
     """
     Evaluate one rule and return production condition traces.
@@ -283,10 +402,30 @@ def evaluate_rule(
     """
     del functions
     try:
-        compiled_rule = compile_ruleset(_temporary_ruleset(rule)).rules[0]
-        matched, traces = _runtime()._evaluate_rule(compiled_rule, row)
+        runtime = _runtime()
+        if ruleset is None:
+            compiled_rule = compile_ruleset(_temporary_ruleset(rule)).rules[0]
+            assigned_values = None
+        else:
+            compiled_rule, assigned_values = _focused_rule_context(
+                ruleset,
+                rule,
+                row,
+                runtime,
+            )
+        matched, traces = runtime._evaluate_rule(
+            compiled_rule,
+            row,
+            assigned_values,
+        )
         assignments = (
-            _runtime()._evaluate_assignments(compiled_rule.assignments, row) if matched else {}
+            runtime._evaluate_assignments(
+                compiled_rule.assignments,
+                row,
+                assigned_values,
+            )
+            if matched
+            else {}
         )
     except _ENGINE_EXCEPTIONS as exc:
         raise OperandError(f"{type(exc).__name__}: {exc}") from exc
@@ -304,9 +443,33 @@ def evaluate_assignment(
     assignment: Assignment,
     row: dict[str, Any],
     functions: Any | None = None,
+    *,
+    ruleset: Ruleset | None = None,
+    owning_rule: Rule | None = None,
 ) -> Resolution:
     """Resolve one assignment value with production operand behavior."""
-    return resolve_operand(assignment.value, row, functions)
+    if ruleset is None and owning_rule is None:
+        return resolve_operand(assignment.value, row, functions)
+    if ruleset is None or owning_rule is None:
+        raise OperandError("ruleset and owning_rule must be supplied together.")
+    del functions
+    try:
+        runtime = _runtime()
+        compiled_rule, assigned_values = _focused_rule_context(
+            ruleset,
+            owning_rule,
+            row,
+            runtime,
+        )
+        compiled = _compiled_assignment(compiled_rule, assignment.assignment_id)
+        return _resolved_operand(
+            compiled.value,
+            row,
+            runtime,
+            assigned_values,
+        )
+    except _ENGINE_EXCEPTIONS as exc:
+        raise OperandError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def result_fields(*, full_audit: bool = False) -> tuple[str, ...]:
@@ -360,18 +523,12 @@ def evaluate_row(
     dict[str, Any]
         Production match and assignment result plus a studio error field.
     """
-    del functions
-    result = empty_result(full_audit=full_audit)
-    try:
-        compiled = compile_ruleset(ruleset)
-        compact = _runtime().evaluate_row(compiled, row)
-        if full_audit:
-            result.update(_full_audit_result(compiled, row, compact))
-        else:
-            result.update(compact)
-    except _ENGINE_EXCEPTIONS as exc:
-        result["error"] = f"{type(exc).__name__}: {exc}"
-    return result
+    return evaluate_rows(
+        ruleset,
+        [row],
+        functions,
+        full_audit=full_audit,
+    )[0]
 
 
 def evaluate_rows(
@@ -381,21 +538,83 @@ def evaluate_rows(
     *,
     full_audit: bool = False,
 ) -> list[dict[str, Any]]:
-    """Evaluate input rows independently with production row semantics."""
-    return [evaluate_row(ruleset, row, functions, full_audit=full_audit) for row in rows]
+    """Evaluate rows while compiling and building audit infrastructure once."""
+    del functions
+    results = [empty_result(full_audit=full_audit) for _ in rows]
+    if not rows:
+        return results
+    try:
+        compiled = compile_ruleset(ruleset)
+        runtime = _runtime()
+    except _ENGINE_EXCEPTIONS as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        for result in results:
+            result["error"] = error
+        return results
+
+    compacts: list[dict[str, Any] | None] = []
+    for row, result in zip(rows, results, strict=True):
+        try:
+            compact = runtime.evaluate_row(compiled, row)
+        except _ENGINE_EXCEPTIONS as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            compacts.append(None)
+            continue
+        compacts.append(compact)
+        if not full_audit:
+            result.update(compact)
+
+    if not full_audit:
+        return results
+
+    successful = [
+        (row, compact)
+        for row, compact in zip(rows, compacts, strict=True)
+        if compact is not None
+    ]
+    if not successful:
+        return results
+    try:
+        evaluator, identity = _full_audit_context(
+            compiled,
+            [row for row, _ in successful],
+            [compact for _, compact in successful],
+        )
+    except _ENGINE_EXCEPTIONS as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        for result, compact in zip(results, compacts, strict=True):
+            if compact is not None:
+                result["error"] = error
+        return results
+
+    for row, compact, result in zip(rows, compacts, results, strict=True):
+        if compact is None:
+            continue
+        try:
+            result.update(
+                _full_audit_result(
+                    row,
+                    compact,
+                    evaluator=evaluator,
+                    identity=identity,
+                )
+            )
+        except _ENGINE_EXCEPTIONS as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+    return results
 
 
-def _full_audit_result(
+def _full_audit_context(
     ruleset: CompiledRuleset,
-    row: Mapping[str, Any],
-    compact: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Evaluate one row with the production Spark worker full-audit contract."""
+    rows: list[Mapping[str, Any]],
+    compacts: list[Mapping[str, Any]],
+) -> tuple[Any, dict[str, str]]:
+    """Build one full-audit evaluator and immutable identity for a row batch."""
     assignment_fields = sorted(
         {assignment.target_field for rule in ruleset.rules for assignment in rule.assignments}
     )
     assignment_types = {
-        field_name: _spark_type_for_assignment(field_name, row, compact)
+        field_name: _spark_type_for_assignment_batch(field_name, rows, compacts)
         for field_name in assignment_fields
     }
     evaluator = SparkRulesEngineRuntime(object(), authoring.registry())._build_row_evaluator(
@@ -404,33 +623,78 @@ def _full_audit_result(
         assignment_types,
         full_audit=True,
     )
+    identity = {
+        "id": ruleset.ruleset_id,
+        "version": ruleset.version,
+        "content_hash": DeltaRowSerializer().content_hash(ruleset),
+    }
+    return evaluator, identity
+
+
+def _full_audit_result(
+    row: Mapping[str, Any],
+    compact: Mapping[str, Any],
+    *,
+    evaluator: Any,
+    identity: Mapping[str, str],
+) -> dict[str, Any]:
+    """Evaluate one row with the production Spark worker full-audit contract."""
     audit = evaluator(_SparkRow(row))
     for field_name in COMPACT_FIELDS:
         if field_name != "error":
             audit[field_name] = compact[field_name]
     audit.update(
-        ruleset={
-            "id": ruleset.ruleset_id,
-            "version": ruleset.version,
-            "content_hash": DeltaRowSerializer().content_hash(ruleset),
-        },
+        ruleset=dict(identity),
         engine_version=__version__,
     )
     return audit
 
 
-def _spark_type_for_assignment(
+def _spark_type_for_assignment_batch(
     field_name: str,
-    row: Mapping[str, Any],
-    compact: Mapping[str, Any],
+    rows: list[Mapping[str, Any]],
+    compacts: list[Mapping[str, Any]],
 ) -> T.DataType:
-    """Infer the Spark normalization type from the production compact result."""
-    assignment = compact.get("assign", {}).get(field_name, {})
-    value = assignment.get("value") if assignment.get("applied") else row.get(field_name)
-    if value is None:
+    """Infer one stable Spark normalization type across a production row batch."""
+    values: list[Any] = []
+    for row, compact in zip(rows, compacts, strict=True):
+        assignment = compact.get("assign", {}).get(field_name, {})
+        values.append(
+            assignment.get("value") if assignment.get("applied") else row.get(field_name)
+        )
+    inferred: list[T.DataType] = []
+    for value in values:
+        if value is None:
+            continue
+        try:
+            data_type = T._infer_type(value)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data_type, T.NullType):
+            inferred.append(data_type)
+    if not inferred:
         return T.StringType()
+    if all(data_type == inferred[0] for data_type in inferred[1:]):
+        return inferred[0]
+    numeric_types = (
+        T.ByteType,
+        T.ShortType,
+        T.IntegerType,
+        T.LongType,
+        T.FloatType,
+        T.DoubleType,
+        T.DecimalType,
+    )
+    if all(isinstance(data_type, numeric_types) for data_type in inferred):
+        if any(isinstance(data_type, T.DecimalType) for data_type in inferred):
+            return T.DecimalType(38, 18)
+        if any(isinstance(data_type, (T.FloatType, T.DoubleType)) for data_type in inferred):
+            return T.DoubleType()
+        return T.LongType()
     try:
-        inferred = T._infer_type(value)
+        merged = inferred[0]
+        for data_type in inferred[1:]:
+            merged = T._merge_type(merged, data_type)
+        return merged
     except (TypeError, ValueError):
         return T.StringType()
-    return T.StringType() if isinstance(inferred, T.NullType) else inferred

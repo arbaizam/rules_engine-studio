@@ -11,9 +11,6 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
-from rules_engine.models import Ruleset as CompiledRuleset
-from rules_engine.models import ValidationResult
-
 from rules_engine import (
     FunctionRegistry,
     RulesetValidator,
@@ -21,6 +18,8 @@ from rules_engine import (
     build_authoring_manifest,
     register_standard_functions,
 )
+from rules_engine.models import Ruleset as CompiledRuleset
+from rules_engine.models import ValidationResult
 
 _REGISTRY = register_standard_functions(FunctionRegistry())
 _COMPILER = YamlRulesetCompiler()

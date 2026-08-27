@@ -1,0 +1,239 @@
+ruleset_id: loan_review
+ruleset_name: Loan review
+version: 0.2.0
+description: Loan review examples for rule authoring and audit testing.
+owner: Rules Team
+owner_department: Credit Risk
+rules:
+- rule_id: eligibility
+  rule_name: Eligibility
+  rule_order: 10
+  active_flag: true
+  stop_on_match: true
+  description: Deem a loan ineligible when its current-or-original FICO is below 620
+    or unavailable, or CurrentDSCR is below 1.20.
+  when:
+    condition_group_id: group:eligibility:root
+    any:
+    - condition_id: condition:eligibility:fico_below_minimum
+      left:
+        custom_function:
+          name: coalesce
+          args:
+            values:
+            - field: CurrentFICO
+            - field: OriginalFICO
+      operator: lt
+      right:
+        literal: 620
+        value_type: integer
+      tolerance_abs: '0'
+      active_flag: true
+    - condition_id: condition:eligibility:fico_missing
+      left:
+        custom_function:
+          name: coalesce
+          args:
+            values:
+            - field: CurrentFICO
+            - field: OriginalFICO
+      operator: is_null
+      tolerance_abs: '0'
+      active_flag: true
+    - condition_id: condition:eligibility:dscr_below_minimum
+      left:
+        field: CurrentDSCR
+      operator: lt
+      right:
+        literal: 1.2
+        value_type: decimal
+      tolerance_abs: '0'
+      active_flag: true
+  assign:
+  - assignment_id: assignment:eligibility:review_status
+    target_field: ReviewStatus
+    value:
+      literal: Ineligible
+      value_type: string
+  - assignment_id: assignment:eligibility:audit_tags
+    target_field: AuditTags
+    value:
+      literal:
+      - Eligibility
+      - Ineligible
+  - assignment_id: assignment:eligibility:decision_detail
+    target_field: DecisionDetail
+    value:
+      literal:
+        status: ineligible
+        policy: FICO < 620 or missing, or CurrentDSCR < 1.20
+- rule_id: dscr_coverage_met
+  rule_name: DSCR coverage met
+  rule_order: 20
+  active_flag: true
+  stop_on_match: false
+  description: Approve current DSCR loans at or above the coverage threshold.
+  when:
+    condition_group_id: group:dscr_coverage_met:root
+    all:
+    - condition_id: condition:dscr_coverage_met:is_dscr
+      left:
+        field: IsDSCR
+      operator: eq
+      right:
+        literal: true
+        value_type: boolean
+      tolerance_abs: '0'
+      active_flag: true
+    - condition_id: condition:dscr_coverage_met:coverage
+      left:
+        field: CurrentDSCR
+      operator: ge
+      right:
+        literal: 1.25
+        value_type: decimal
+      tolerance_abs: '0'
+      active_flag: true
+    - condition_id: condition:dscr_coverage_met:measurement_date
+      left:
+        field: CurrentDSCRDate
+      operator: ge
+      right:
+        literal: 2025-01-01
+        value_type: date
+      tolerance_abs: '0'
+      active_flag: true
+  assign:
+  - assignment_id: assignment:dscr_coverage_met:review_status
+    target_field: ReviewStatus
+    value:
+      literal: Eligible
+      value_type: string
+  - assignment_id: assignment:dscr_coverage_met:audit_tags
+    target_field: AuditTags
+    value:
+      literal:
+      - DSCR
+      - CoverageMet
+  - assignment_id: assignment:dscr_coverage_met:decision_detail
+    target_field: DecisionDetail
+    value:
+      literal:
+        status: eligible
+        basis: CurrentDSCR
+        threshold: 1.25
+- rule_id: non_dscr_risk_review
+  rule_name: Non-DSCR risk review
+  rule_order: 30
+  active_flag: true
+  stop_on_match: false
+  description: Route non-DSCR loans with elevated DTI or lower FICO to review.
+  when:
+    condition_group_id: group:non_dscr_risk_review:root
+    all:
+    - condition_id: condition:non_dscr_risk_review:is_dscr
+      left:
+        field: IsDSCR
+      operator: eq
+      right:
+        literal: false
+        value_type: boolean
+      tolerance_abs: '0'
+      active_flag: true
+    - condition_group_id: group:non_dscr_risk_review:thresholds
+      any:
+      - condition_id: condition:non_dscr_risk_review:dti
+        left:
+          field: BackEndDTI
+        operator: gt
+        right:
+          literal: 43
+          value_type: integer
+        tolerance_abs: '0'
+        active_flag: true
+      - condition_id: condition:non_dscr_risk_review:fico
+        left:
+          field: OriginalFICO
+        operator: lt
+        right:
+          literal: 700
+          value_type: integer
+        tolerance_abs: '0'
+        active_flag: true
+  assign:
+  - assignment_id: assignment:non_dscr_risk_review:review_status
+    target_field: ReviewStatus
+    value:
+      literal: Manual Review
+      value_type: string
+  - assignment_id: assignment:non_dscr_risk_review:audit_tags
+    target_field: AuditTags
+    value:
+      literal:
+      - NonDSCR
+      - RiskThreshold
+- rule_id: partial_extract_review
+  rule_name: Partial extract review
+  rule_order: 40
+  active_flag: true
+  stop_on_match: false
+  description: Require data completion when only a partial extract is available.
+  when:
+    condition_group_id: group:partial_extract_review:root
+    all:
+    - condition_id: condition:partial_extract_review:extract
+      left:
+        field: Extract
+      operator: eq
+      right:
+        literal: PartialExtract
+        value_type: string
+      tolerance_abs: '0'
+      active_flag: true
+  assign:
+  - assignment_id: assignment:partial_extract_review:review_status
+    target_field: ReviewStatus
+    value:
+      literal: Data Required
+      value_type: string
+  - assignment_id: assignment:partial_extract_review:audit_tags
+    target_field: AuditTags
+    value:
+      literal:
+      - PartialExtract
+      - MissingData
+- rule_id: structured_metadata_review
+  rule_name: Structured metadata review
+  rule_order: 50
+  active_flag: true
+  stop_on_match: false
+  description: Exercise array and struct comparisons against mock servicing metadata.
+  when:
+    condition_group_id: group:structured_metadata_review:root
+    any:
+    - condition_id: condition:structured_metadata_review:watch_tag
+      left:
+        field: ArrayColumn
+      operator: contains
+      right:
+        literal: Watch
+        value_type: string
+      tolerance_abs: '0'
+      active_flag: true
+    - condition_id: condition:structured_metadata_review:high_risk_struct
+      left:
+        field: StructColumn
+      operator: eq
+      right:
+        literal:
+          risk_band: High
+          source: MockServicing
+          manual_review: true
+      tolerance_abs: '0'
+      active_flag: true
+  assign:
+  - assignment_id: assignment:structured_metadata_review:structured_match
+    target_field: StructuredMatch
+    value:
+      literal: true
+      value_type: boolean

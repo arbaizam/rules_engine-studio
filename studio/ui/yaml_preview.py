@@ -85,7 +85,7 @@ def current_snapshot() -> yaml_io.YamlSnapshot:
     return _cached_snapshot(state.draft().to_dict(), tuple(state.columns()))
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=32)
 def _cached_snapshot(
     payload: dict,
     columns: tuple[str, ...],

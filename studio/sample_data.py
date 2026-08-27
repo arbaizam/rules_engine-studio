@@ -248,7 +248,7 @@ DEMO_ROWS: list[dict[str, Any]] = [
 
 def demo_frame() -> pd.DataFrame:
     """Return the editable starter rows as a pandas DataFrame."""
-    return _parse_date_columns(pd.DataFrame(DEMO_ROWS))
+    return normalize_frame(pd.DataFrame(DEMO_ROWS))
 
 
 def _field(name: str) -> Operand:
@@ -544,13 +544,13 @@ def read_uploaded(name: str, data: bytes) -> pd.DataFrame:
     """
     lowered = name.lower()
     if lowered.endswith(".csv"):
-        return _parse_date_columns(pd.read_csv(io.BytesIO(data)))
+        return normalize_frame(pd.read_csv(io.BytesIO(data)))
     if lowered.endswith(".tsv"):
-        return _parse_date_columns(pd.read_csv(io.BytesIO(data), sep="\t"))
+        return normalize_frame(pd.read_csv(io.BytesIO(data), sep="\t"))
     if lowered.endswith(".json"):
-        return pd.DataFrame(json.loads(data.decode("utf-8")))
+        return normalize_frame(pd.DataFrame(json.loads(data.decode("utf-8"))))
     if lowered.endswith(".parquet"):
-        return pd.read_parquet(io.BytesIO(data))
+        return normalize_frame(pd.read_parquet(io.BytesIO(data)))
     raise ValueError("Supported sample data formats: .csv, .tsv, .json, .parquet")
 
 
@@ -570,9 +570,14 @@ def _parse_date_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return parsed_frame
 
 
+def normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize date columns and retain nullable integer types without widening."""
+    return _parse_date_columns(frame).convert_dtypes()
+
+
 def read_pasted_json(text: str) -> pd.DataFrame:
     """Parse pasted JSON object or array data into editable test rows."""
     parsed = json.loads(text)
     if isinstance(parsed, dict):
         parsed = [parsed]
-    return pd.DataFrame(parsed)
+    return normalize_frame(pd.DataFrame(parsed))

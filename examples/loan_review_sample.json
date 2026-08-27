@@ -1,0 +1,258 @@
+[
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX4",
+    "OriginationDate": "1/1/2020",
+    "FirstPaymentDate": "1/1/2010",
+    "IntRate": 1.5,
+    "BackEndDTI": null,
+    "CurrentDSCR": 1.12,
+    "CurrentDSCRDate": "12/31/2025",
+    "OriginalFICO": null,
+    "CurrentFICO": null,
+    "LoanPurpose": "Purchase",
+    "RefinanceType": null,
+    "IsDSCR": true,
+    "StructColumn": {
+      "risk_band": "Low",
+      "source": "MockServicing",
+      "manual_review": false
+    },
+    "ArrayColumn": [
+      "DSCR",
+      "Purchase"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX5",
+    "OriginationDate": "1/1/2006",
+    "FirstPaymentDate": null,
+    "IntRate": 1.0,
+    "BackEndDTI": null,
+    "CurrentDSCR": 1.26,
+    "CurrentDSCRDate": "12/31/2025",
+    "OriginalFICO": null,
+    "CurrentFICO": null,
+    "LoanPurpose": "Purchase",
+    "RefinanceType": "Cash Out",
+    "IsDSCR": true,
+    "StructColumn": {
+      "risk_band": "Medium",
+      "source": "MockServicing",
+      "manual_review": false
+    },
+    "ArrayColumn": [
+      "DSCR",
+      "Purchase",
+      "CashOut"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX6",
+    "OriginationDate": "1/10/2020",
+    "FirstPaymentDate": "3/10/2021",
+    "IntRate": 5.5,
+    "BackEndDTI": null,
+    "CurrentDSCR": 1.32,
+    "CurrentDSCRDate": "12/31/2025",
+    "OriginalFICO": null,
+    "CurrentFICO": null,
+    "LoanPurpose": "Refinance",
+    "RefinanceType": "No Cash Out",
+    "IsDSCR": true,
+    "StructColumn": {
+      "risk_band": "Low",
+      "source": "MockServicing",
+      "manual_review": false
+    },
+    "ArrayColumn": [
+      "DSCR",
+      "Refinance",
+      "NoCashOut"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX7",
+    "OriginationDate": "2/5/2017",
+    "FirstPaymentDate": null,
+    "IntRate": null,
+    "BackEndDTI": null,
+    "CurrentDSCR": 1.33,
+    "CurrentDSCRDate": "8/29/2025",
+    "OriginalFICO": 779,
+    "CurrentFICO": null,
+    "LoanPurpose": "Refinance",
+    "RefinanceType": null,
+    "IsDSCR": true,
+    "StructColumn": {
+      "risk_band": "Low",
+      "source": "MockServicing",
+      "manual_review": false
+    },
+    "ArrayColumn": [
+      "DSCR",
+      "Refinance"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX8",
+    "OriginationDate": "6/1/2017",
+    "FirstPaymentDate": null,
+    "IntRate": 6.0,
+    "BackEndDTI": 23.327,
+    "CurrentDSCR": null,
+    "CurrentDSCRDate": "3/30/2026",
+    "OriginalFICO": 729,
+    "CurrentFICO": null,
+    "LoanPurpose": "Refinance",
+    "RefinanceType": null,
+    "IsDSCR": true,
+    "StructColumn": {
+      "risk_band": "Medium",
+      "source": "MockServicing",
+      "manual_review": true
+    },
+    "ArrayColumn": [
+      "DSCR",
+      "MissingDSCR",
+      "Watch"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX9",
+    "OriginationDate": "1/1/2006",
+    "FirstPaymentDate": null,
+    "IntRate": 4.99,
+    "BackEndDTI": 23.327,
+    "CurrentDSCR": null,
+    "CurrentDSCRDate": null,
+    "OriginalFICO": 690,
+    "CurrentFICO": null,
+    "LoanPurpose": "Purchase",
+    "RefinanceType": null,
+    "IsDSCR": false,
+    "StructColumn": {
+      "risk_band": "High",
+      "source": "MockServicing",
+      "manual_review": true
+    },
+    "ArrayColumn": [
+      "NonDSCR",
+      "Purchase",
+      "Watch"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "FullExtract",
+    "LoanNo": "XXXX10",
+    "OriginationDate": "1/1/2006",
+    "FirstPaymentDate": null,
+    "IntRate": 4.55,
+    "BackEndDTI": 47.957,
+    "CurrentDSCR": null,
+    "CurrentDSCRDate": null,
+    "OriginalFICO": 737,
+    "CurrentFICO": null,
+    "LoanPurpose": "Purchase",
+    "RefinanceType": null,
+    "IsDSCR": false,
+    "StructColumn": {
+      "risk_band": "High",
+      "source": "MockServicing",
+      "manual_review": true
+    },
+    "ArrayColumn": [
+      "NonDSCR",
+      "Purchase",
+      "Watch"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "PartialExtract",
+    "LoanNo": "XXXX11",
+    "OriginationDate": null,
+    "FirstPaymentDate": null,
+    "IntRate": 6.78,
+    "BackEndDTI": 25.6,
+    "CurrentDSCR": null,
+    "CurrentDSCRDate": null,
+    "OriginalFICO": null,
+    "CurrentFICO": null,
+    "LoanPurpose": "Purchase",
+    "RefinanceType": null,
+    "IsDSCR": false,
+    "StructColumn": {
+      "risk_band": "Medium",
+      "source": "MockServicing",
+      "manual_review": true
+    },
+    "ArrayColumn": [
+      "NonDSCR",
+      "PartialExtract"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "PartialExtract",
+    "LoanNo": "XXXX12",
+    "OriginationDate": "1/1/2006",
+    "FirstPaymentDate": null,
+    "IntRate": 8.85,
+    "BackEndDTI": 25.6,
+    "CurrentDSCR": null,
+    "CurrentDSCRDate": null,
+    "OriginalFICO": null,
+    "CurrentFICO": null,
+    "LoanPurpose": "Refinance",
+    "RefinanceType": null,
+    "IsDSCR": false,
+    "StructColumn": {
+      "risk_band": "Medium",
+      "source": "MockServicing",
+      "manual_review": true
+    },
+    "ArrayColumn": [
+      "NonDSCR",
+      "PartialExtract"
+    ]
+  },
+  {
+    "EffectiveDate": "8/14/2026",
+    "Extract": "PartialExtract",
+    "LoanNo": "XXXX13",
+    "OriginationDate": null,
+    "FirstPaymentDate": null,
+    "IntRate": 4.45,
+    "BackEndDTI": null,
+    "CurrentDSCR": null,
+    "CurrentDSCRDate": null,
+    "OriginalFICO": null,
+    "CurrentFICO": null,
+    "LoanPurpose": "Refinance",
+    "RefinanceType": null,
+    "IsDSCR": false,
+    "StructColumn": {
+      "risk_band": "High",
+      "source": "MockServicing",
+      "manual_review": true
+    },
+    "ArrayColumn": [
+      "NonDSCR",
+      "PartialExtract",
+      "Watch"
+    ]
+  }
+]

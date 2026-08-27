@@ -11,6 +11,7 @@ get a widget-key collision.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
@@ -18,8 +19,8 @@ import streamlit as st
 
 from rules_engine import FunctionRegistry
 
-from . import custom_functions, sample_data
-from .schema import Ruleset, new_rule
+from . import custom_functions, sample_data, type_compatibility
+from .schema import TOLERANCE_OPERATORS, Ruleset, new_rule
 
 DRAFT = "draft_ruleset"
 SAMPLE = "sample_frame"
@@ -54,6 +55,7 @@ def draft() -> Ruleset:
 
 def set_draft(ruleset: Ruleset) -> None:
     """Replace the current draft and select its first rule."""
+    normalize_ruleset(ruleset)
     st.session_state[DRAFT] = ruleset
     st.session_state[SELECTED] = ruleset.rules[0].uid if ruleset.rules else None
 
@@ -65,7 +67,7 @@ def frame() -> pd.DataFrame:
 
 def set_frame(df: pd.DataFrame) -> None:
     """Replace the current test-data frame."""
-    st.session_state[SAMPLE] = df
+    st.session_state[SAMPLE] = sample_data.normalize_frame(df)
 
 
 def columns() -> list[str]:
@@ -75,8 +77,12 @@ def columns() -> list[str]:
 
 def rows() -> list[dict[str, Any]]:
     """Return test data as Python row mappings for production evaluation."""
-    normalized = frame().astype(object).where(pd.notna(frame()), None)
-    return normalized.to_dict("records")
+    return type_compatibility.normalized_records(frame())
+
+
+def column_profiles() -> dict[str, type_compatibility.ValueProfile]:
+    """Return value-derived semantic types for current sample columns."""
+    return type_compatibility.column_profiles(frame())
 
 
 def selected_rule():
@@ -96,6 +102,20 @@ def select_rule(uid: str | None) -> None:
 def functions() -> FunctionRegistry:
     """Return the authoritative function registry used by the studio."""
     return custom_functions.registry()
+
+
+def normalize_ruleset(ruleset: Ruleset) -> None:
+    """Repair legacy widget state that cannot be represented by active controls."""
+    ordered = ruleset.ordered_rules()
+    if len({rule.rule_order for rule in ordered}) != len(ordered):
+        for index, rule in enumerate(ordered, start=1):
+            rule.rule_order = index * 10
+    for rule in ruleset.rules:
+        for condition in rule.conditions.walk_conditions():
+            if condition.operator not in TOLERANCE_OPERATORS:
+                condition.tolerance_abs = Decimal(0)
+            if condition.operator in {"is_null", "is_not_null"}:
+                condition.error_on_null = False
 
 
 # --------------------------------------------------------------------------
@@ -143,7 +163,7 @@ def duplicate_rule(uid: str) -> None:
             continue
         clone = rule.copy()
         clone.rule_id = _unique_rule_id(ruleset, f"{rule.rule_id}_copy")
-        clone.rule_order = rule.rule_order + 1
+        clone.rule_order = _next_free_rule_order(ruleset, rule.rule_order + 1)
         ruleset.rules.append(clone)
         select_rule(clone.uid)
         return
@@ -159,6 +179,9 @@ def delete_rule(uid: str) -> None:
 def move_rule(uid: str, offset: int) -> None:
     """Swap ``rule_order`` with the neighbor in the requested direction."""
     ordered = draft().ordered_rules()
+    if len({rule.rule_order for rule in ordered}) != len(ordered):
+        for index, rule in enumerate(ordered, start=1):
+            rule.rule_order = index * 10
     index = next((i for i, r in enumerate(ordered) if r.uid == uid), None)
     if index is None:
         return
@@ -199,3 +222,11 @@ def _unique_rule_id(ruleset: Ruleset, candidate: str) -> str:
     while f"{candidate}_{counter}" in existing:
         counter += 1
     return f"{candidate}_{counter}"
+
+
+def _next_free_rule_order(ruleset: Ruleset, candidate: int) -> int:
+    """Return the first unused rule order at or after a candidate value."""
+    existing = {rule.rule_order for rule in ruleset.rules}
+    while candidate in existing:
+        candidate += 1
+    return candidate

@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+
 from rules_engine.spark_runtime import (
     ASSIGNMENT_RESULT_STRUCT,
     CONDITION_TRACE_STRUCT,
@@ -101,7 +102,10 @@ def _one_rule(row: dict[str, Any]) -> None:
         key="eval_rule",
     )
     try:
-        outcome = engine.evaluate_rule(rule, row)
+        outcome = engine.evaluate_rule(rule, row, ruleset=state.draft())
+    except engine.FocusedEvaluationSkipped as exc:
+        st.warning(str(exc))
+        return
     except engine.OperandError as exc:
         st.error(str(exc))
         return
@@ -122,7 +126,7 @@ def _one_rule(row: dict[str, Any]) -> None:
                 "right_default_applied": right.get("default_applied", False),
             }
         )
-    st.dataframe(pd.DataFrame(traces), width="stretch", hide_index=True)
+    st.dataframe(_display_frame(pd.DataFrame(traces)), width="stretch", hide_index=True)
     if outcome["matched"]:
         _plain_assignment_table(outcome["assign"])
 
@@ -133,14 +137,22 @@ def _one_condition(row: dict[str, Any]) -> None:
     if not items:
         st.caption("No conditions are available.")
         return
-    _, _, condition = st.selectbox(
+    _, rule, condition = st.selectbox(
         "Condition",
         items,
         format_func=lambda item: item[0],
         key="eval_condition",
     )
     try:
-        result = engine.evaluate_condition(condition, row)
+        result = engine.evaluate_condition(
+            condition,
+            row,
+            ruleset=state.draft(),
+            owning_rule=rule,
+        )
+    except engine.FocusedEvaluationSkipped as exc:
+        st.warning(str(exc))
+        return
     except engine.OperandError as exc:
         st.error(str(exc))
         return
@@ -164,14 +176,22 @@ def _one_assignment(row: dict[str, Any]) -> None:
     if not items:
         st.caption("No assignments are available.")
         return
-    _, _, assignment = st.selectbox(
+    _, rule, assignment = st.selectbox(
         "Assignment",
         items,
         format_func=lambda item: item[0],
         key="eval_assignment",
     )
     try:
-        resolution = engine.evaluate_assignment(assignment, row)
+        resolution = engine.evaluate_assignment(
+            assignment,
+            row,
+            ruleset=state.draft(),
+            owning_rule=rule,
+        )
+    except engine.FocusedEvaluationSkipped as exc:
+        st.warning(str(exc))
+        return
     except engine.OperandError as exc:
         st.error(str(exc))
         return
@@ -193,7 +213,7 @@ def _batch(rows: list[dict[str, Any]], *, full_audit: bool) -> None:
     metrics[1].metric("Matched", matched)
     metrics[2].metric("Unmatched", len(rows) - matched - errors)
     metrics[3].metric("Errors", errors)
-    st.dataframe(frame, width="stretch", hide_index=True)
+    st.dataframe(_display_frame(frame), width="stretch", hide_index=True)
     st.download_button(
         "Download evaluated CSV",
         data=frame.to_csv(index=False).encode("utf-8"),
@@ -231,7 +251,7 @@ def _assignment_result_table(assignments: dict[str, Any]) -> None:
         for field_name, result in assignments.items()
     ]
     if rows:
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.dataframe(_display_frame(pd.DataFrame(rows)), width="stretch", hide_index=True)
     else:
         st.caption("No assignment targets are defined.")
 
@@ -241,11 +261,13 @@ def _plain_assignment_table(assignments: dict[str, Any]) -> None:
     if not assignments:
         return
     st.dataframe(
-        pd.DataFrame(
-            [
-                {"field": field_name, "value": _cell(value)}
-                for field_name, value in assignments.items()
-            ]
+        _display_frame(
+            pd.DataFrame(
+                [
+                    {"field": field_name, "value": _cell(value)}
+                    for field_name, value in assignments.items()
+                ]
+            )
         ),
         width="stretch",
         hide_index=True,
@@ -328,7 +350,7 @@ def _condition_struct(condition: dict[str, Any]) -> None:
         left = condition.get("left") or {}
         right = condition.get("right") or {}
         rows = _operand_struct_rows(left, right)
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.dataframe(_display_frame(pd.DataFrame(rows)), width="stretch", hide_index=True)
 
 
 def _assignment_structs(assignments: list[dict[str, Any]]) -> None:
@@ -351,7 +373,7 @@ def _struct_table(
 ) -> None:
     """Render scalar struct fields in declared production-schema order."""
     rows = _struct_rows(payload, struct, exclude=exclude)
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.dataframe(_display_frame(pd.DataFrame(rows)), width="stretch", hide_index=True)
 
 
 def _struct_rows(
@@ -394,6 +416,11 @@ def _cell(value: Any) -> Any:
     if isinstance(value, (dict, list)):
         return json.dumps(_jsonable(value), default=str)
     return value
+
+
+def _display_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize mixed audit values before Streamlit converts them through Arrow."""
+    return frame.astype("string").fillna("")
 
 
 def _all_conditions() -> list[tuple[str, Rule, Condition]]:

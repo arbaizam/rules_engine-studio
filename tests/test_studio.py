@@ -9,6 +9,7 @@ function registry, row evaluation, and uploaded test data.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import subprocess
 import sys
@@ -17,9 +18,19 @@ from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
+import pytest
 import streamlit as st
 
-from studio import authoring, custom_functions, engine, expressions, sample_data, state, yaml_io
+from studio import (
+    authoring,
+    custom_functions,
+    engine,
+    expressions,
+    sample_data,
+    state,
+    type_compatibility,
+    yaml_io,
+)
 from studio.schema import (
     LITERAL_TYPES,
     LOGIC_MODES,
@@ -38,6 +49,9 @@ from studio.schema import (
     referenced_columns,
 )
 from studio.ui import browser_state, reorder
+from studio.ui import rules as rules_ui
+from studio.ui.evaluate import _display_frame
+from studio.ui.widgets import value_badge
 
 
 def field(name: str, *, default: object | None = None) -> Operand:
@@ -477,6 +491,32 @@ def test_drag_reorder_preserves_rule_order_slots(monkeypatch):
     assert [rule.rule_order for rule in draft.ordered_rules()] == original_orders
 
 
+def test_duplicate_rule_allocates_unique_orders_and_move_repairs_legacy_ties(monkeypatch):
+    """Repeated duplication and legacy collisions must not block ordering controls."""
+    draft = sample_data.demo_ruleset()
+    source = draft.ordered_rules()[0]
+    monkeypatch.setattr(state, "draft", lambda: draft)
+    monkeypatch.setattr(state, "select_rule", lambda uid: None)
+
+    state.duplicate_rule(source.uid)
+    state.duplicate_rule(source.uid)
+
+    orders = [rule.rule_order for rule in draft.rules]
+    assert len(orders) == len(set(orders))
+    assert {11, 12} <= set(orders)
+    assert not any(
+        issue.check_name == "RULE_ORDER_DUPLICATE" for issue in yaml_io.validate(draft)
+    )
+
+    clones = [rule for rule in draft.rules if rule.rule_id.startswith("eligibility_copy")]
+    clones[1].rule_order = clones[0].rule_order
+    before = [rule.uid for rule in draft.ordered_rules()]
+    state.move_rule(source.uid, 1)
+    after = [rule.uid for rule in draft.ordered_rules()]
+    assert after != before
+    assert len({rule.rule_order for rule in draft.rules}) == len(draft.rules)
+
+
 def test_sorter_selection_opens_the_emitted_rule(monkeypatch):
     """The integrated list selects only a rule that belongs to the current draft."""
     draft = sample_data.demo_ruleset()
@@ -534,6 +574,22 @@ def test_yaml_round_trip_uses_canonical_compiler_and_exporter():
     assert "conditions:" not in text
     assert "assignments:" not in text
     assert "!!float" not in text
+
+
+def test_repository_examples_are_current_and_reproducible():
+    """Every shipped example must be generated from the canonical demo project."""
+    project_root = Path(__file__).parents[1]
+    examples = project_root / "examples"
+    yaml_path = examples / "loan_review.yaml"
+    sample_path = examples / "loan_review_sample.json"
+
+    assert not (examples / "position_hierarchy.yaml").exists()
+    assert not (examples / "position_hierarchy_sample.csv").exists()
+    assert yaml_path.read_text(encoding="utf-8") == yaml_io.to_yaml(
+        sample_data.demo_ruleset()
+    )
+    assert json.loads(sample_path.read_text(encoding="utf-8")) == sample_data.DEMO_ROWS
+    assert yaml_io.validate(yaml_io.from_yaml(yaml_path.read_text(encoding="utf-8"))) == []
 
 
 def test_live_yaml_snapshot_reuses_canonical_export_and_nonblocking_warnings():
@@ -661,6 +717,125 @@ def test_row_evaluation_preserves_assigned_value_chains():
     assert result["assign"]["result"] == {"applied": True, "value": "accepted"}
 
 
+def test_focused_evaluation_preserves_preceding_assignment_context():
+    """Every focused scope must see values committed by earlier matched rules."""
+    producer = rule(
+        "producer",
+        10,
+        [condition("condition:producer", field("eligible"), "eq", literal(True))],
+        [assignment("assignment:producer:bucket", "bucket", literal("A"))],
+    )
+    consumer_condition = condition(
+        "condition:consumer",
+        assigned("bucket"),
+        "eq",
+        literal("A"),
+    )
+    consumer_assignment = assignment(
+        "assignment:consumer:result",
+        "result",
+        assigned("bucket"),
+    )
+    consumer = rule(
+        "consumer",
+        20,
+        [consumer_condition],
+        [consumer_assignment],
+    )
+    draft = ruleset(producer, consumer)
+    row = {"eligible": True}
+
+    whole = engine.evaluate_row(draft, row)
+    focused_rule = engine.evaluate_rule(consumer, row, ruleset=draft)
+    focused_condition = engine.evaluate_condition(
+        consumer_condition,
+        row,
+        ruleset=draft,
+        owning_rule=consumer,
+    )
+    focused_assignment = engine.evaluate_assignment(
+        consumer_assignment,
+        row,
+        ruleset=draft,
+        owning_rule=consumer,
+    )
+
+    assert whole["matched_rule_ids"] == ["producer", "consumer"]
+    assert whole["assign"]["result"] == {"applied": True, "value": "A"}
+    assert focused_rule["matched"] is True
+    assert focused_rule["assign"] == {"result": "A"}
+    assert focused_rule["condition_trace"][0]["left"]["produced_by_rule_id"] == "producer"
+    assert focused_condition["matched"] is True
+    assert focused_condition["left_value"] == "A"
+    assert focused_condition["left"]["produced_by_rule_id"] == "producer"
+    assert focused_assignment.value == "A"
+    assert focused_assignment.trace["produced_by_rule_id"] == "producer"
+
+
+def test_focused_evaluation_uses_latest_preceding_assignment():
+    """Focused evaluation must reproduce production assignment overrides."""
+    producer = rule(
+        "producer",
+        10,
+        [condition("condition:producer", field("eligible"), "eq", literal(True))],
+        [assignment("assignment:producer:bucket", "bucket", literal("A"))],
+    )
+    overrider = rule(
+        "overrider",
+        20,
+        [condition("condition:overrider", field("eligible"), "eq", literal(True))],
+        [assignment("assignment:overrider:bucket", "bucket", literal("B"))],
+    )
+    consumer_condition = condition(
+        "condition:consumer",
+        assigned("bucket"),
+        "eq",
+        literal("B"),
+    )
+    consumer = rule(
+        "consumer",
+        30,
+        [consumer_condition],
+        [assignment("assignment:consumer:result", "result", assigned("bucket"))],
+    )
+    draft = ruleset(producer, overrider, consumer)
+    row = {"eligible": True}
+
+    focused_rule = engine.evaluate_rule(consumer, row, ruleset=draft)
+    focused_condition = engine.evaluate_condition(
+        consumer_condition,
+        row,
+        ruleset=draft,
+        owning_rule=consumer,
+    )
+
+    assert focused_rule["matched"] is True
+    assert focused_rule["assign"] == {"result": "B"}
+    assert focused_condition["left_value"] == "B"
+    assert focused_condition["left"]["produced_by_rule_id"] == "overrider"
+
+
+def test_focused_evaluation_honors_prior_stop_on_match():
+    """A focused rule must report when an earlier stop rule prevents its execution."""
+    stopper = rule(
+        "stopper",
+        10,
+        [condition("condition:stopper", field("eligible"), "eq", literal(True))],
+        [assignment("assignment:stopper:bucket", "bucket", literal("A"))],
+        stop_on_match=True,
+    )
+    consumer = rule(
+        "consumer",
+        20,
+        [condition("condition:consumer", assigned("bucket"), "eq", literal("A"))],
+        [assignment("assignment:consumer:result", "result", literal("accepted"))],
+    )
+    draft = ruleset(stopper, consumer)
+
+    with pytest.raises(engine.FocusedEvaluationSkipped, match="stopper"):
+        engine.evaluate_rule(consumer, {"eligible": True}, ruleset=draft)
+
+
 def test_stop_on_match_uses_production_rule_order():
     """A matching stop rule prevents every later rule from running."""
     draft = ruleset(
@@ -698,6 +873,51 @@ def test_operand_default_if_null_uses_production_runtime():
     assert result["assign"]["flag"]["value"] is True
 
 
+def test_struct_default_if_null_uses_compiler_accepted_long_form():
+    """Mapping fallbacks must retain their literal wrapper during serialization."""
+    fallback = {"risk_band": "Low", "manual_review": False}
+    source = Operand(
+        kind="field",
+        field_name="metadata",
+        default_if_null=Operand(kind="literal", value=fallback, value_type="struct"),
+    )
+    draft = ruleset(
+        rule(
+            "struct_default",
+            10,
+            [
+                condition(
+                    "condition:struct_default",
+                    source,
+                    "eq",
+                    literal(fallback, "struct"),
+                )
+            ],
+            [assignment("assignment:struct_default:matched", "matched", literal(True))],
+        )
+    )
+
+    assert source.to_dict()["default_if_null"] == {"literal": fallback}
+    assert yaml_io.validate(draft) == []
+    assert engine.evaluate_row(draft, {"metadata": None})["matched"] is True
+
+
+def test_unsupported_operator_clears_stale_tolerance_and_null_error_state():
+    """Changing operator families must not leave hidden invalid controls behind."""
+    draft = Condition(
+        operator="eq",
+        tolerance_abs=Decimal("0.25"),
+        error_on_null=True,
+    )
+
+    rules_ui._normalize_condition_controls(draft, "between")
+    assert draft.operator == "between"
+    assert draft.tolerance_abs == Decimal(0)
+
+    rules_ui._normalize_condition_controls(draft, "is_null")
+    assert draft.error_on_null is False
+
+
 def test_decimal_tolerance_uses_production_comparison():
     """Numeric equality tolerance is interpreted by the engine, not the studio."""
     draft = ruleset(
@@ -718,6 +938,69 @@ def test_decimal_tolerance_uses_production_comparison():
     )
     assert engine.evaluate_row(draft, {"score": Decimal("1.009")})["matched"] is True
     assert engine.evaluate_row(draft, {"score": Decimal("1.02")})["matched"] is False
+
+
+def test_type_profiles_filter_string_comparisons_and_preserve_unknowns():
+    """Sample values should remove predictably incompatible authoring choices."""
+    profiles = type_compatibility.column_profiles(sample_data.demo_frame())
+    string_profile = profiles["LoanNo"]
+
+    assert profiles["EffectiveDate"].kind == type_compatibility.DATE
+    assert profiles["OriginalFICO"].kind == type_compatibility.INTEGER
+    assert profiles["StructColumn"].kind == type_compatibility.MAPPING
+    assert profiles["ArrayColumn"].kind == type_compatibility.SEQUENCE
+    assert profiles["CurrentFICO"].kind == type_compatibility.UNKNOWN
+    assert "starts_with" in type_compatibility.operator_options(
+        string_profile,
+        OPERATOR_NAMES,
+    )
+    assert "starts_with" not in type_compatibility.operator_options(
+        profiles["EffectiveDate"],
+        OPERATOR_NAMES,
+    )
+
+    allowed = type_compatibility.right_types_for_condition("starts_with", string_profile)
+    fields = type_compatibility.compatible_names(list(profiles), profiles, allowed)
+    assert "LoanNo" in fields
+    assert "EffectiveDate" not in fields
+    assert "OriginalFICO" not in fields
+    assert "CurrentFICO" in fields
+
+
+def test_nullable_integer_rows_reach_the_engine_as_python_ints(monkeypatch):
+    """Nulls must not widen integer-valued fields into float runtime values."""
+    session = {
+        state.SAMPLE: pd.DataFrame({"score": [None, 779]}),
+    }
+    monkeypatch.setattr(st, "session_state", session)
+    state.set_frame(session[state.SAMPLE])
+
+    rows = state.rows()
+    assert rows[0]["score"] is None
+    assert rows[1]["score"] == 779
+    assert type(rows[1]["score"]) is int
+
+
+def test_value_badges_escape_html_and_markdown_delimiters():
+    """Uploaded values must remain inert inside unsafe HTML metric markup."""
+    badge = value_badge('x` <img src=y onerror="alert(1)">')
+    assert badge.startswith("``")
+    assert "<img" not in badge
+    assert "&lt;img" in badge
+
+
+def test_audit_display_frames_use_arrow_safe_string_columns():
+    """Mixed trace values must be normalized before Streamlit invokes Arrow."""
+    frame = _display_frame(
+        pd.DataFrame(
+            {
+                "field": ["value", "nullable", "passed"],
+                "value": ["text", pd.NA, True],
+            }
+        )
+    )
+    assert all(str(dtype) == "string" for dtype in frame.dtypes)
+    assert frame.loc[1, "value"] == ""
 
 
 def test_condition_trace_is_emitted_by_production_runtime():
@@ -794,6 +1077,60 @@ def test_browser_autosave_round_trip_preserves_draft_rows_and_selection(monkeypa
     assert "ruleset_id: browser_recovery" in yaml_io.to_yaml(state.draft())
 
 
+def test_browser_restore_repairs_legacy_orders_and_hidden_condition_state(monkeypatch):
+    """Old browser snapshots must reopen in an immediately exportable ordering state."""
+    draft = sample_data.demo_ruleset()
+    draft.rules[1].rule_order = draft.rules[0].rule_order
+    stale = next(draft.rules[0].conditions.walk_conditions())
+    stale.operator = "starts_with"
+    stale.tolerance_abs = Decimal("0.5")
+    session = {
+        state.DRAFT: draft,
+        state.SAMPLE: sample_data.demo_frame(),
+        state.SELECTED: draft.rules[0].uid,
+        state.ACTIONS: [],
+        state.PREFIX: "rules_engine",
+    }
+    monkeypatch.setattr(st, "session_state", session)
+
+    encoded = browser_state.snapshot_json()
+    browser_state.restore_json(encoded)
+
+    restored = state.draft()
+    assert len({rule.rule_order for rule in restored.rules}) == len(restored.rules)
+    restored_condition = next(restored.rules[0].conditions.walk_conditions())
+    assert restored_condition.tolerance_abs == Decimal(0)
+
+
+def test_corrupt_browser_autosave_is_cleared_without_blocking_startup(monkeypatch):
+    """Malformed tagged values must fall back to demo state and clear local storage."""
+    corrupt = json.dumps(
+        {
+            "schema_version": 1,
+            "ruleset": {
+                "ruleset_id": {
+                    "__studio_type__": "decimal",
+                    "value": "not-a-decimal",
+                }
+            },
+            "sample": {"columns": [], "rows": []},
+        }
+    )
+    session = {
+        browser_state._COMPONENT_KEY: {"restore": {"payload": corrupt}},
+        state.ACTIONS: [],
+    }
+    monkeypatch.setattr(st, "session_state", session)
+    monkeypatch.setattr(state, "queue", lambda action: action())
+
+    browser_state._restore_from_component()
+
+    assert session[browser_state._CLEAR] is True
+    assert session[browser_state._RESTORE_PENDING] is False
+    assert "could not be recovered" in session[browser_state._NOTICE]
+    assert 'data?.mode === "clear"' in browser_state._BRIDGE_DEFINITION["js"]
+
+
 def test_struct_and_array_literals_work_in_conditions_and_assignments():
     """Canonical nested literals evaluate and assign without a studio-only dialect."""
     metadata = {"risk_band": "High", "manual_review": True}
@@ -847,6 +1184,32 @@ def test_full_audit_uses_production_trace_and_override_contract():
     assert result["ruleset"]["id"] == "studio_test"
     assert result["ruleset"]["content_hash"]
     assert result["engine_version"]
+
+
+def test_batch_evaluation_builds_shared_infrastructure_once(monkeypatch):
+    """Full-audit batches must not recompile or rebuild the evaluator per row."""
+    draft = sample_data.demo_ruleset()
+    rows = type_compatibility.normalized_records(sample_data.demo_frame())[:4]
+    counts = {"compile": 0, "audit_context": 0}
+    original_compile = engine.compile_ruleset
+    original_context = engine._full_audit_context
+
+    def counted_compile(ruleset):
+        counts["compile"] += 1
+        return original_compile(ruleset)
+
+    def counted_context(ruleset, batch_rows, compacts):
+        counts["audit_context"] += 1
+        return original_context(ruleset, batch_rows, compacts)
+
+    monkeypatch.setattr(engine, "compile_ruleset", counted_compile)
+    monkeypatch.setattr(engine, "_full_audit_context", counted_context)
+
+    results = engine.evaluate_rows(draft, rows, full_audit=True)
+
+    assert len(results) == len(rows)
+    assert all(result["error"] is None for result in results)
+    assert counts == {"compile": 1, "audit_context": 1}
 
 
 def test_row_errors_are_captured_without_inventing_results():

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import streamlit as st
+
 from rules_engine.exceptions import RulesEngineError
 
 from .. import state, yaml_io
@@ -79,9 +80,9 @@ def _import() -> None:
             key="ruleset_paste",
             height=160,
             placeholder=(
-                "ruleset_id: position_hierarchy\n"
-                "ruleset_name: Position hierarchy\n"
-                "version: 0.1.0\n"
+                "ruleset_id: loan_review\n"
+                "ruleset_name: Loan review\n"
+                "version: 0.2.0\n"
                 "rules: []"
             ),
             label_visibility="collapsed",

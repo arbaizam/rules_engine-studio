@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 import yaml
+
 from rules_engine.exceptions import RulesEngineError
 from rules_engine.exporter_yaml import YamlRulesetExporter
 

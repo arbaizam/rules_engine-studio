@@ -236,7 +236,9 @@ class Operand:
                 payload["value_type"] = value_type
         if self.default_if_null is not None:
             fallback = self.default_if_null.to_dict()
-            if set(fallback) == {"literal"}:
+            if set(fallback) == {"literal"} and not isinstance(
+                fallback["literal"], Mapping
+            ):
                 payload["default_if_null"] = fallback["literal"]
             else:
                 payload["default_if_null"] = fallback
@@ -668,13 +670,3 @@ def referenced_columns(ruleset: Ruleset) -> set[str]:
         for assignment in rule.assignments:
             visit(assignment.value)
     return found
-
-
-def assigned_fields(ruleset: Ruleset) -> list[str]:
-    """Return assignment target fields in first-production order."""
-    seen: list[str] = []
-    for rule in ruleset.ordered_rules():
-        for assignment in rule.assignments:
-            if assignment.target_field and assignment.target_field not in seen:
-                seen.append(assignment.target_field)
-    return seen

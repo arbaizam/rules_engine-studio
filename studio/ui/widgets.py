@@ -12,13 +12,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from decimal import InvalidOperation
+from html import escape
 from typing import Any
 
 import streamlit as st
 
-from .. import custom_functions
+from .. import custom_functions, type_compatibility
 from ..schema import (
-    LITERAL_TYPES,
     OPERAND_KINDS,
     Operand,
     infer_literal_type,
@@ -51,6 +51,9 @@ def operand_editor(
     assigned: Sequence[str] = (),
     *,
     in_assignment: bool | None = None,
+    column_profiles: Mapping[str, type_compatibility.ValueProfile] | None = None,
+    assigned_profiles: Mapping[str, type_compatibility.ValueProfile] | None = None,
+    allowed_types: frozenset[str] | None = None,
 ) -> Operand:
     """
     Edit one canonical operand in place.
@@ -71,12 +74,20 @@ def operand_editor(
         Fields committed by earlier rules.
     in_assignment : bool | None, default None
         Function-permission filter for the authoring context.
+    column_profiles : Mapping[str, ValueProfile] | None, default None
+        Value-derived types for incoming fields.
+    assigned_profiles : Mapping[str, ValueProfile] | None, default None
+        Inferred types for targets committed by earlier rules.
+    allowed_types : frozenset[str] | None, default None
+        Optional semantic-type constraint from an operator or function argument.
 
     Returns
     -------
     Operand
         The same mutable operand instance.
     """
+    field_profiles = column_profiles or {}
+    prior_profiles = assigned_profiles or {}
     operand.kind = st.selectbox(
         label,
         KIND_ORDER,
@@ -87,20 +98,34 @@ def operand_editor(
     )
 
     if operand.kind == "field":
+        compatible = type_compatibility.compatible_names(
+            columns,
+            field_profiles,
+            allowed_types,
+        )
         operand.field_name = _name_input(
             "Input field",
             operand.field_name,
-            columns,
+            compatible,
             f"{key}-field",
             "field name",
+            profiles=field_profiles,
+            allowed_types=allowed_types,
         )
     elif operand.kind == "assigned":
+        compatible = type_compatibility.compatible_names(
+            assigned,
+            prior_profiles,
+            allowed_types,
+        )
         operand.assigned_field = _name_input(
             "Prior assignment",
             operand.assigned_field,
-            assigned,
+            compatible,
             f"{key}-assigned",
             "target field",
+            profiles=prior_profiles,
+            allowed_types=allowed_types,
         )
     elif operand.kind == "custom_function":
         _function_editor(
@@ -109,25 +134,42 @@ def operand_editor(
             columns,
             assigned,
             in_assignment=in_assignment,
+            column_profiles=field_profiles,
+            assigned_profiles=prior_profiles,
+            allowed_types=allowed_types,
         )
     else:
         operand.value_type = normalize_literal_editor_type(operand.value_type, operand.value)
-        literal_types = list(
-            dict.fromkeys(
-                [*LITERAL_TYPES, operand.value_type] if operand.value_type else LITERAL_TYPES
-            )
+        literal_types = type_compatibility.literal_type_options(
+            allowed_types,
+            operand.value_type,
         )
+        current_type = operand.value_type
         operand.value_type = st.selectbox(
             "Literal type",
             literal_types,
             index=index_of(literal_types, operand.value_type, 0),
             key=f"{key}-vtype",
             label_visibility="collapsed",
+            format_func=lambda value: _type_option_label(
+                value,
+                current_type,
+                allowed_types,
+            ),
         )
         operand.value = literal_input(operand, f"{key}-value")
 
     if operand.kind != "literal":
-        _default_if_null_editor(operand, key)
+        profile = type_compatibility.profile_for_operand(
+            operand,
+            field_profiles,
+            prior_profiles,
+        )
+        _default_if_null_editor(
+            operand,
+            key,
+            allowed_types=_fallback_types(profile, allowed_types),
+        )
     return operand
 
 
@@ -137,6 +179,9 @@ def _name_input(
     options: Sequence[str],
     key: str,
     placeholder: str,
+    *,
+    profiles: Mapping[str, type_compatibility.ValueProfile] | None = None,
+    allowed_types: frozenset[str] | None = None,
 ) -> str:
     """Render a select box when names are known and text input otherwise."""
     available = list(dict.fromkeys([*options, value] if value else options))
@@ -147,6 +192,12 @@ def _name_input(
             index=index_of(available, value),
             key=key,
             label_visibility="collapsed",
+            format_func=lambda name: _name_option_label(
+                name,
+                value,
+                profiles or {},
+                allowed_types,
+            ),
         )
     return st.text_input(
         label,
@@ -157,6 +208,50 @@ def _name_input(
     )
 
 
+def _name_option_label(
+    name: str,
+    current: str,
+    profiles: Mapping[str, type_compatibility.ValueProfile],
+    allowed_types: frozenset[str] | None,
+) -> str:
+    """Describe a named value source and flag a retained incompatible import."""
+    profile = profiles.get(name, type_compatibility.ValueProfile())
+    label = f"{name} · {profile.label}"
+    if (
+        name == current
+        and not type_compatibility.profile_matches(profile, allowed_types)
+    ):
+        label += " · incompatible"
+    return label
+
+
+def _type_option_label(
+    value_type: str,
+    current: str | None,
+    allowed_types: frozenset[str] | None,
+) -> str:
+    """Flag an imported literal type that conflicts with the active constraint."""
+    profile = type_compatibility.profile_for_literal_type(value_type)
+    if (
+        value_type == current
+        and not type_compatibility.profile_matches(profile, allowed_types)
+    ):
+        return f"{value_type} · incompatible"
+    return value_type
+
+
+def _fallback_types(
+    profile: type_compatibility.ValueProfile,
+    inherited: frozenset[str] | None,
+) -> frozenset[str] | None:
+    """Constrain a null fallback to the operand's inferred concrete type."""
+    if profile.kind in {type_compatibility.UNKNOWN, type_compatibility.MIXED}:
+        return inherited
+    if profile.kind in type_compatibility.NUMERIC_TYPES:
+        return type_compatibility.NUMERIC_TYPES
+    return frozenset({profile.kind})
+
+
 def _function_editor(
     operand: Operand,
     key: str,
@@ -164,9 +259,15 @@ def _function_editor(
     assigned: Sequence[str],
     *,
     in_assignment: bool | None,
+    column_profiles: Mapping[str, type_compatibility.ValueProfile],
+    assigned_profiles: Mapping[str, type_compatibility.ValueProfile],
+    allowed_types: frozenset[str] | None,
 ) -> None:
     """Render a registry-driven function selector and named arguments."""
-    available = custom_functions.names(in_assignment=in_assignment)
+    available = type_compatibility.compatible_function_names(
+        custom_functions.names(in_assignment=in_assignment),
+        allowed_types,
+    )
     options = list(dict.fromkeys([*available, operand.function] if operand.function else available))
     if not options:
         st.error("No active functions are registered for this context.")
@@ -179,6 +280,9 @@ def _function_editor(
         label_visibility="collapsed",
     )
     specification = custom_functions.spec(operand.function)
+    return_mode, _, return_argument = str(
+        specification.get("return_type_hint") or ""
+    ).partition(":")
     st.caption(
         f"{specification['description'] or 'Registered custom function.'} "
         f"Returns `{specification['return_type_hint'] or 'any'}`."
@@ -188,6 +292,12 @@ def _function_editor(
     for argument in specification["arguments"]:
         argument_name = str(argument["name"])
         argument_type_hint = str(argument["type_hint"])
+        derived_types = (
+            allowed_types
+            if argument_name == return_argument
+            and return_mode in {"same_as", "common_type"}
+            else None
+        )
         authored = argument_name in operand.args
         if not argument["required"]:
             authored = st.checkbox(
@@ -234,6 +344,11 @@ def _function_editor(
                     assigned,
                     in_assignment=in_assignment,
                     item_type_hint=argument_type_hint,
+                    column_profiles=column_profiles,
+                    assigned_profiles=assigned_profiles,
+                    item_allowed_types=(
+                        derived_types if return_mode == "common_type" else None
+                    ),
                 )
                 operand.args[argument_name] = values
                 continue
@@ -260,6 +375,13 @@ def _function_editor(
             compact=True,
             assigned=assigned,
             in_assignment=in_assignment,
+            column_profiles=column_profiles,
+            assigned_profiles=assigned_profiles,
+            allowed_types=(
+                derived_types
+                if return_mode == "same_as" and derived_types is not None
+                else type_compatibility.allowed_types_for_hint(argument_type_hint)
+            ),
         )
 
 
@@ -271,6 +393,9 @@ def _sequence_operand_editor(
     *,
     in_assignment: bool | None,
     item_type_hint: str,
+    column_profiles: Mapping[str, type_compatibility.ValueProfile],
+    assigned_profiles: Mapping[str, type_compatibility.ValueProfile],
+    item_allowed_types: frozenset[str] | None,
 ) -> None:
     """Render an authored sequence whose items may themselves be operands."""
     item_hint = {
@@ -295,6 +420,13 @@ def _sequence_operand_editor(
                 compact=True,
                 assigned=assigned,
                 in_assignment=in_assignment,
+                column_profiles=column_profiles,
+                assigned_profiles=assigned_profiles,
+                allowed_types=(
+                    item_allowed_types
+                    if item_allowed_types is not None
+                    else type_compatibility.allowed_types_for_hint(item_hint)
+                ),
             )
             if st.button("Remove item", key=f"{key}-remove-{index}"):
                 values.pop(index)
@@ -379,7 +511,12 @@ def _literal_type_for_hint(type_hint: str, value: Any) -> str:
     return mapping.get(type_hint, infer_literal_type(value))
 
 
-def _default_if_null_editor(operand: Operand, key: str) -> None:
+def _default_if_null_editor(
+    operand: Operand,
+    key: str,
+    *,
+    allowed_types: frozenset[str] | None,
+) -> None:
     """Render the operand-level literal fallback supported by the engine."""
     enabled = st.checkbox(
         "Default if null",
@@ -394,20 +531,23 @@ def _default_if_null_editor(operand: Operand, key: str) -> None:
         operand.default_if_null = Operand(kind="literal", value="", value_type="string")
     fallback = operand.default_if_null
     fallback.value_type = normalize_literal_editor_type(fallback.value_type, fallback.value)
-    fallback_types = list(
-        dict.fromkeys(
-            [
-                *[kind for kind in LITERAL_TYPES if kind != "null"],
-                fallback.value_type,
-            ]
-        )
+    fallback_types = type_compatibility.literal_type_options(
+        allowed_types,
+        fallback.value_type,
     )
+    fallback_types = [kind for kind in fallback_types if kind != "null"]
+    current_type = fallback.value_type
     fallback.value_type = st.selectbox(
         "Default type",
         fallback_types,
         index=index_of(fallback_types, fallback.value_type),
         key=f"{key}-default-type",
         label_visibility="collapsed",
+        format_func=lambda value: _type_option_label(
+            value,
+            current_type,
+            allowed_types,
+        ),
     )
     fallback.value = literal_input(fallback, f"{key}-default-value")
 
@@ -529,9 +669,17 @@ def issue_list(issues: Sequence[Any], title: str = "Checks") -> None:
 def value_badge(value: Any) -> str:
     """Return a compact Markdown representation of a runtime value."""
     if value is None:
-        return "`null`"
-    if isinstance(value, bool):
-        return "`true`" if value else "`false`"
-    if isinstance(value, (list, tuple)):
-        return "`" + ", ".join(str(item) for item in value) + "`"
-    return f"`{value}`"
+        text = "null"
+    elif isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (list, tuple)):
+        text = ", ".join(str(item) for item in value)
+    else:
+        text = str(value)
+    longest_run = 0
+    current_run = 0
+    for character in text:
+        current_run = current_run + 1 if character == "`" else 0
+        longest_run = max(longest_run, current_run)
+    delimiter = "`" * max(1, longest_run + 1)
+    return f"{delimiter} {escape(text)} {delimiter}"

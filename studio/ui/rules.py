@@ -9,7 +9,7 @@ from typing import Any
 
 import streamlit as st
 
-from .. import engine, expressions, state
+from .. import engine, expressions, state, type_compatibility
 from ..schema import (
     OPERATOR_NAMES,
     OPERATORS_BY_NAME,
@@ -19,7 +19,6 @@ from ..schema import (
     ConditionGroup,
     Operand,
     Rule,
-    assigned_fields,
     new_condition,
 )
 from .widgets import index_of, operand_editor, value_badge
@@ -35,6 +34,12 @@ def render() -> None:
         return
 
     columns = state.columns()
+    column_profiles = state.column_profiles()
+    assigned_profiles = type_compatibility.assignment_profiles(
+        state.draft(),
+        column_profiles,
+        before_rule=rule,
+    )
     with st.container(key=f"rule_node_{rule.uid}"):
         st.markdown(
             '<div class="studio-node-label studio-rule-label">Rule</div>',
@@ -43,9 +48,9 @@ def render() -> None:
         _header(rule)
         rule_expression_slot = st.empty()
         st.divider()
-        _conditions(rule, columns)
+        _conditions(rule, columns, column_profiles, assigned_profiles)
         st.divider()
-        _assignments(rule, columns)
+        _assignments(rule, columns, column_profiles, assigned_profiles)
         with rule_expression_slot.container():
             _expression_expander(
                 f"Rule expression · {rule.rule_name or rule.rule_id or 'Untitled'}",
@@ -99,17 +104,33 @@ def _header(rule: Rule) -> None:
 # --------------------------------------------------------------------------
 
 
-def _conditions(rule: Rule, columns: Sequence[str]) -> None:
+def _conditions(
+    rule: Rule,
+    columns: Sequence[str],
+    column_profiles: dict[str, type_compatibility.ValueProfile],
+    assigned_profiles: dict[str, type_compatibility.ValueProfile],
+) -> None:
     """Render the nested canonical condition tree for one rule."""
     st.subheader("When")
-    st.caption("Rule → root group → nested groups and conditions")
-    _group(rule.conditions, None, columns, depth=0)
+    st.caption(
+        "Rule → root group → nested groups and conditions · choices follow current value types"
+    )
+    _group(
+        rule.conditions,
+        None,
+        columns,
+        column_profiles,
+        assigned_profiles,
+        depth=0,
+    )
 
 
 def _group(
     group: ConditionGroup,
     parent: ConditionGroup | None,
     columns: Sequence[str],
+    column_profiles: dict[str, type_compatibility.ValueProfile],
+    assigned_profiles: dict[str, type_compatibility.ValueProfile],
     depth: int,
 ) -> None:
     """Render one logical group and recursively render child groups."""
@@ -151,9 +172,22 @@ def _group(
         ]
         nested_groups = [child for child in group.children if isinstance(child, ConditionGroup)]
         for condition in direct_conditions:
-            _condition(condition, group, columns)
+            _condition(
+                condition,
+                group,
+                columns,
+                column_profiles,
+                assigned_profiles,
+            )
         for nested_group in nested_groups:
-            _group(nested_group, group, columns, depth + 1)
+            _group(
+                nested_group,
+                group,
+                columns,
+                column_profiles,
+                assigned_profiles,
+                depth + 1,
+            )
         with group_expression_slot.container():
             _expression_expander(
                 f"Group expression · {group.condition_group_id or 'Untitled group'}",
@@ -163,8 +197,19 @@ def _group(
             )
 
 
-def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[str]) -> None:
+def _condition(
+    condition: Condition,
+    parent: ConditionGroup,
+    columns: Sequence[str],
+    column_profiles: dict[str, type_compatibility.ValueProfile],
+    assigned_profiles: dict[str, type_compatibility.ValueProfile],
+) -> None:
     """Render one canonical condition with operand-level null behavior."""
+    _normalize_condition_controls(
+        condition,
+        st.session_state.get(f"cop-{condition.uid}", condition.operator),
+    )
+    assigned_names = list(assigned_profiles)
     with st.container(border=True, key=f"condition_{condition.uid}"):
         st.markdown('<div class="studio-node-label">Condition</div>', unsafe_allow_html=True)
         meta = st.columns([4, 1.25, 1.75])
@@ -192,20 +237,39 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
                 f"cl-{condition.uid}",
                 columns,
                 label="If",
-                assigned=assigned_fields(state.draft()),
+                assigned=assigned_names,
                 in_assignment=False,
+                column_profiles=column_profiles,
+                assigned_profiles=assigned_profiles,
+                allowed_types=type_compatibility.left_types_for_operator(
+                    condition.operator
+                ),
             )
 
         with cols[1]:
+            left_profile = type_compatibility.profile_for_operand(
+                condition.left,
+                column_profiles,
+                assigned_profiles,
+            )
+            operator_options = type_compatibility.operator_options(
+                left_profile,
+                OPERATOR_NAMES,
+            )
+            if condition.operator not in operator_options:
+                operator_options.append(condition.operator)
             condition.operator = st.selectbox(
                 "Test",
-                OPERATOR_NAMES,
-                index=index_of(OPERATOR_NAMES, condition.operator),
-                format_func=lambda name: OPERATORS_BY_NAME[name].label,
+                operator_options,
+                index=index_of(operator_options, condition.operator),
+                format_func=lambda name: _operator_option_label(
+                    name,
+                    condition.operator,
+                    left_profile,
+                ),
                 key=f"cop-{condition.uid}",
             )
-            if condition.operator in {"is_null", "is_not_null"}:
-                condition.error_on_null = False
+            _normalize_condition_controls(condition, condition.operator)
             if condition.operator in TOLERANCE_OPERATORS:
                 tolerance_row = st.columns([1, 1], gap="small", vertical_alignment="center")
                 with tolerance_row[0]:
@@ -222,7 +286,10 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
                         unsafe_allow_html=True,
                     )
                 try:
-                    condition.tolerance_abs = Decimal(tolerance)
+                    parsed_tolerance = Decimal(tolerance)
+                    if not parsed_tolerance.is_finite():
+                        raise InvalidOperation
+                    condition.tolerance_abs = parsed_tolerance
                 except (InvalidOperation, ValueError):
                     st.error("Tolerance must be a finite decimal.")
 
@@ -239,8 +306,14 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
                     f"cr-{condition.uid}",
                     columns,
                     label="Compare to",
-                    assigned=assigned_fields(state.draft()),
+                    assigned=assigned_names,
                     in_assignment=False,
+                    column_profiles=column_profiles,
+                    assigned_profiles=assigned_profiles,
+                    allowed_types=type_compatibility.right_types_for_condition(
+                        condition.operator,
+                        left_profile,
+                    ),
                 )
                 if spec is not None and spec.hint:
                     st.caption(spec.hint)
@@ -257,6 +330,29 @@ def _condition(condition: Condition, parent: ConditionGroup, columns: Sequence[s
             with footer[1]:
                 if st.button("Remove", key=f"cdel-{condition.uid}", width="stretch"):
                     state.queue(lambda p=parent, c=condition: p.children.remove(c))
+
+
+def _normalize_condition_controls(condition: Condition, operator: Any) -> None:
+    """Clear state that the selected comparison operator cannot consume."""
+    if operator in OPERATORS_BY_NAME:
+        condition.operator = str(operator)
+    if condition.operator in {"is_null", "is_not_null"}:
+        condition.error_on_null = False
+    if condition.operator not in TOLERANCE_OPERATORS:
+        condition.tolerance_abs = Decimal(0)
+
+
+def _operator_option_label(
+    name: str,
+    current: str,
+    left_profile: type_compatibility.ValueProfile,
+) -> str:
+    """Flag an imported operator that conflicts with the selected left value."""
+    label = OPERATORS_BY_NAME[name].label
+    compatible = type_compatibility.operator_options(left_profile, OPERATOR_NAMES)
+    if name == current and name not in compatible:
+        label += " · incompatible"
+    return label
 
 
 def _expression_expander(label: str, heading: str, expression: str, *, key: str) -> None:
@@ -282,7 +378,12 @@ def _expression_card(heading: str, expression: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def _assignments(rule: Rule, columns: Sequence[str]) -> None:
+def _assignments(
+    rule: Rule,
+    columns: Sequence[str],
+    column_profiles: dict[str, type_compatibility.ValueProfile],
+    assigned_profiles: dict[str, type_compatibility.ValueProfile],
+) -> None:
     """Render canonical assignments emitted when the rule matches."""
     st.subheader("Then set")
     st.caption(
@@ -293,6 +394,7 @@ def _assignments(rule: Rule, columns: Sequence[str]) -> None:
     if not rule.assignments:
         st.caption("No assignments yet.")
 
+    assigned_names = list(assigned_profiles)
     for assignment in list(rule.assignments):
         with st.container(border=True, key=f"assignment_{assignment.uid}"):
             st.markdown(
@@ -313,13 +415,33 @@ def _assignments(rule: Rule, columns: Sequence[str]) -> None:
                     placeholder="hierarchy_node",
                 )
             with cols[1]:
+                target_profile = column_profiles.get(
+                    assignment.target_field,
+                    assigned_profiles.get(
+                        assignment.target_field,
+                        type_compatibility.ValueProfile(),
+                    ),
+                )
+                allowed_types = None
+                if target_profile.kind not in {
+                    type_compatibility.UNKNOWN,
+                    type_compatibility.MIXED,
+                }:
+                    allowed_types = (
+                        type_compatibility.NUMERIC_TYPES
+                        if target_profile.kind in type_compatibility.NUMERIC_TYPES
+                        else frozenset({target_profile.kind})
+                    )
                 operand_editor(
                     assignment.value,
                     f"aval-{assignment.uid}",
                     columns,
                     label="Set to",
-                    assigned=assigned_fields(state.draft()),
+                    assigned=assigned_names,
                     in_assignment=True,
+                    column_profiles=column_profiles,
+                    assigned_profiles=assigned_profiles,
+                    allowed_types=allowed_types,
                 )
 
             with st.container(key=f"assignment-footer-{assignment.uid}"):
@@ -382,7 +504,10 @@ def _try_it(rule: Rule) -> None:
     row = rows[picked]
 
     try:
-        outcome = engine.evaluate_rule(rule, row, state.functions())
+        outcome = engine.evaluate_rule(rule, row, ruleset=state.draft())
+    except engine.FocusedEvaluationSkipped as exc:
+        st.warning(str(exc))
+        return
     except engine.OperandError as exc:
         st.error(str(exc))
         return
@@ -398,13 +523,10 @@ def _try_it(rule: Rule) -> None:
     _trace(outcome["condition_trace"])
 
     if outcome["matched"] and rule.assignments:
-        lines = []
+        lines: list[str] = []
         for assignment in rule.assignments:
-            try:
-                resolved = engine.evaluate_assignment(assignment, row, state.functions())
-                lines.append(f"- `{assignment.target_field}` = {value_badge(resolved.value)}")
-            except engine.OperandError as exc:
-                lines.append(f"- `{assignment.target_field}` — {exc}")
+            value = outcome["assign"].get(assignment.target_field)
+            lines.append(f"- `{assignment.target_field}` = {value_badge(value)}")
         st.markdown("**Would set**\n" + "\n".join(lines))
 
 
