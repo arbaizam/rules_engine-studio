@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -96,7 +95,7 @@ class YamlSnapshot:
     @property
     def exportable(self) -> bool:
         """Return whether the snapshot passed every production error check."""
-        return not any(issue.severity == "error" for issue in self.issues)
+        return self.compiled and not any(issue.severity == "error" for issue in self.issues)
 
     @property
     def error_count(self) -> int:
@@ -211,29 +210,37 @@ def _compile_and_validate(
 
 def _draft_yaml(payload: Mapping[str, Any]) -> str:
     """Render compiler-rejected authoring data with safe, portable YAML values."""
-    return yaml.safe_dump(
-        _yaml_safe(payload),
+    return yaml.dump(
+        payload,
+        Dumper=_DraftDumper,
         sort_keys=False,
         allow_unicode=True,
         default_flow_style=False,
     )
 
 
-def _yaml_safe(value: Any) -> Any:
-    """Normalize mutable authoring values for PyYAML's safe dumper."""
-    if isinstance(value, Mapping):
-        return {str(key): _yaml_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_yaml_safe(item) for item in value]
-    if isinstance(value, set):
-        return [_yaml_safe(item) for item in sorted(value, key=str)]
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    if isinstance(value, (date, datetime, time)):
-        return value.isoformat()
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+class _DraftDumper(yaml.SafeDumper):
+    """Keep canonical literal kinds visible even while metadata is incomplete."""
+
+
+_DraftDumper.add_representer(
+    Decimal,
+    lambda dumper, value: dumper.represent_scalar("tag:yaml.org,2002:float", str(value)),
+)
+_DraftDumper.add_representer(
+    tuple,
+    lambda dumper, value: dumper.represent_sequence("!rules_engine/tuple", value),
+)
+_DraftDumper.add_representer(
+    set,
+    lambda dumper, value: dumper.represent_mapping(
+        "tag:yaml.org,2002:set", [(item, None) for item in sorted(value, key=repr)]
+    ),
+)
+_DraftDumper.add_representer(
+    None,
+    lambda dumper, value: dumper.represent_scalar("tag:yaml.org,2002:str", str(value)),
+)
 
 
 def has_errors(issues: list[Issue]) -> bool:

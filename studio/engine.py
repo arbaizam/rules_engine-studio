@@ -1,190 +1,309 @@
-"""
-Production rules-engine integration for authoring-time evaluation.
+"""Production compilation, Spark schema validation, and sample-row evaluation.
 
-Every draft is compiled by ``YamlRulesetCompiler`` and every row is evaluated
-by ``SparkRowEvaluator``, the same row-level implementation used inside Spark
-workers. The studio adds only error capture and presentation-friendly wrappers.
-It does not implement comparison, null, assignment, or custom-function
-semantics of its own.
+The Studio uses the engine's worker adapter for compact and full audit results.
+Focused inspections reproduce earlier committed assignments using the same
+schema and normalization before invoking the engine's trace helpers.
 """
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
+from decimal import Decimal
 from typing import Any
 
 from pyspark.sql import types as T
 
 from rules_engine import __version__
-from rules_engine.exceptions import RulesEngineError
 from rules_engine.models import Assignment as CompiledAssignment
 from rules_engine.models import Condition as CompiledCondition
 from rules_engine.models import ConditionGroup as CompiledConditionGroup
-from rules_engine.models import Operand as CompiledOperand
 from rules_engine.models import Rule as CompiledRule
 from rules_engine.models import Ruleset as CompiledRuleset
-from rules_engine.runtime import AssignedValue, SparkRowEvaluator
+from rules_engine.runtime import AssignedValue
 from rules_engine.serializer import DeltaRowSerializer
-from rules_engine.spark_runtime import SparkRulesEngineRuntime
+from rules_engine.spark_runtime import (
+    COMPACT_RESULT_FIELD_NAMES,
+    FULL_AUDIT_ONLY_RESULT_FIELD_NAMES,
+    SparkRulesEngineRuntime,
+    _SparkRowUdfEvaluator,
+)
+from rules_engine.spark_types import decimal_literal_type, decimal_value_fits
+from rules_engine.spark_validator import SparkRulesetCompatibilityValidator
 
 from . import authoring
-from .schema import Assignment, Condition, Operand, Rule, Ruleset
+from .schema import Assignment, Condition, ConditionGroup, Operand, Rule, Ruleset
 
-COMPACT_FIELDS = ("error", "matched", "matched_rule_ids", "assign")
-FULL_AUDIT_ONLY_FIELDS = ("matched_rules", "assignment_results")
+FULL_AUDIT_ONLY_FIELDS = FULL_AUDIT_ONLY_RESULT_FIELD_NAMES
 AUDIT_IDENTITY_FIELDS = ("ruleset", "engine_version")
-FULL_AUDIT_FIELDS = COMPACT_FIELDS + FULL_AUDIT_ONLY_FIELDS + AUDIT_IDENTITY_FIELDS
-_ENGINE_EXCEPTIONS = (ArithmeticError, KeyError, RulesEngineError, TypeError, ValueError)
+COMPACT_FIELDS = COMPACT_RESULT_FIELD_NAMES + AUDIT_IDENTITY_FIELDS
+FULL_AUDIT_FIELDS = COMPACT_RESULT_FIELD_NAMES + FULL_AUDIT_ONLY_FIELDS + AUDIT_IDENTITY_FIELDS
 
 
 class OperandError(Exception):
-    """Raised when the production compiler or evaluator rejects an authoring operation."""
+    """Raised when the production compiler or evaluator rejects an inspection."""
 
 
 class FocusedEvaluationSkipped(OperandError):
-    """Raised when an earlier stop-on-match rule prevents a focused evaluation."""
+    """Raised when the selected object does not execute on the selected row."""
 
 
 @dataclass
 class Resolution:
-    """
-    Resolved operand value plus production trace metadata.
-
-    Parameters
-    ----------
-    value : Any
-        Runtime value produced by the operand.
-    source : str
-        Canonical operand kind.
-    detail : str
-        Compact source label.
-    children : list[Resolution]
-        Reserved for compatibility with existing result views.
-    trace : dict[str, Any] | None
-        Trace metadata emitted by ``SparkRowEvaluator``.
-    """
+    """Resolved operand value plus the engine's trace metadata."""
 
     value: Any
     source: str
     detail: str
-    children: list[Resolution] = field(default_factory=list)
     trace: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class _SparkRow:
-    """Expose a mapping through the Spark-row contract used by the engine worker."""
+    """Expose sample mappings through the production Spark-row contract."""
 
     values: Mapping[str, Any]
+    source_schema: T.StructType | None = None
 
     def asDict(self, recursive: bool = True) -> dict[str, Any]:  # noqa: N802
-        """Return row values through the ``pyspark.sql.Row`` method contract."""
+        """Return sample values through the pyspark Row method contract."""
         del recursive
+        if self.source_schema is not None:
+            return _sample_input_value(self.values, self.source_schema)
         return dict(self.values)
 
 
+@dataclass
+class _FocusedContext:
+    """One validated rule, source row, and previously committed assignments."""
+
+    rule: CompiledRule
+    row: Mapping[str, Any]
+    runtime: _SparkRowUdfEvaluator
+    assigned: dict[str, AssignedValue]
+    assignment_types: dict[str, T.DataType]
+
+
 def compile_ruleset(ruleset: Ruleset) -> CompiledRuleset:
-    """
-    Compile a mutable studio draft through the production YAML compiler.
-
-    Parameters
-    ----------
-    ruleset : Ruleset
-        Mutable authoring draft.
-
-    Returns
-    -------
-    rules_engine.models.Ruleset
-        Canonical compiled ruleset.
-    """
+    """Compile a mutable draft through the canonical YAML compiler."""
     return authoring.compile_payload(ruleset.to_dict())
 
 
-def _runtime() -> SparkRowEvaluator:
-    """Return a production row evaluator bound to all standard functions."""
-    return SparkRowEvaluator.without_repository(authoring.registry())
+def sample_schema(rows: list[Mapping[str, Any]]) -> T.StructType:
+    """Infer one Spark schema for a complete batch without string fallbacks.
+
+    Sample mappings represent structs and naive datetimes represent TimestampNTZ.
+    Mixed or unsupported columns are rejected instead of silently coerced.
+    Null-only columns retain NullType so the engine can use authored type hints.
+    """
+    schema = T.StructType()
+    for row in rows:
+        schema = _merge_sample_types(schema, _sample_type(row), "sample data")
+    return schema
+
+
+def _sample_type(value: Any) -> T.DataType:
+    """Infer a sample type while preserving exact decimals and nested structures."""
+    if isinstance(value, Decimal):
+        inferred = decimal_literal_type(value)
+        if inferred is None:
+            raise ValueError(f"Sample decimal {value!r} cannot be represented by Spark.")
+        return inferred
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("Sample struct and column names must be strings.")
+        return T.StructType(
+            [T.StructField(key, _sample_type(item), True) for key, item in value.items()]
+        )
+    if isinstance(value, (list, tuple)):
+        element_type: T.DataType = T.NullType()
+        for item in value:
+            element_type = _merge_sample_types(element_type, _sample_type(item), "array element")
+        return T.ArrayType(element_type, True)
+    return T._infer_type(value, prefer_timestamp_ntz=True)
+
+
+def _merge_sample_types(left: T.DataType, right: T.DataType, label: str) -> T.DataType:
+    """Merge compatible samples with the production numeric widening rules."""
+    if isinstance(left, T.NullType):
+        return right
+    if isinstance(right, T.NullType) or left == right:
+        return left
+    if isinstance(left, T.StructType) and isinstance(right, T.StructType):
+        fields = {field.name: field.dataType for field in left.fields}
+        for field in right.fields:
+            fields[field.name] = _merge_sample_types(
+                fields.get(field.name, T.NullType()), field.dataType, f"{label}.{field.name}"
+            )
+        return T.StructType([T.StructField(name, kind, True) for name, kind in fields.items()])
+    if isinstance(left, T.ArrayType) and isinstance(right, T.ArrayType):
+        return T.ArrayType(
+            _merge_sample_types(left.elementType, right.elementType, f"{label}[]"), True
+        )
+    merged = SparkRulesetCompatibilityValidator(authoring.registry())._common_type(left, right)
+    if merged is None:
+        raise TypeError(
+            f"{label} has incompatible sample types {left.simpleString()} and "
+            f"{right.simpleString()}; provide consistently typed test data."
+        )
+    return merged
+
+
+def _sample_input_value(value: Any, data_type: T.DataType) -> Any:
+    """Materialize samples as typed Spark inputs without losing numeric precision."""
+    if value is None:
+        return None
+    if isinstance(data_type, T.StructType):
+        value = {
+            field.name: _sample_input_value(value.get(field.name), field.dataType)
+            for field in data_type.fields
+        }
+    elif isinstance(data_type, T.ArrayType):
+        value = [_sample_input_value(item, data_type.elementType) for item in value]
+    elif isinstance(data_type, T.MapType):
+        value = {
+            _sample_input_value(key, data_type.keyType): _sample_input_value(
+                item, data_type.valueType
+            )
+            for key, item in value.items()
+        }
+    elif isinstance(data_type, (T.FloatType, T.DoubleType)) and isinstance(value, (int, float)):
+        converted = float(value)
+        if isinstance(data_type, T.FloatType):
+            converted = struct.unpack("!f", struct.pack("!f", converted))[0]
+        if isinstance(value, int) and (isinstance(value, bool) or converted != value):
+            raise ValueError(
+                f"Sample integer {value!r} cannot widen to a float without precision loss."
+            )
+        value = converted
+    elif isinstance(data_type, T.DecimalType):
+        if isinstance(value, int) and not isinstance(value, bool):
+            value = Decimal(value)
+        if isinstance(value, Decimal) and not decimal_value_fits(value, data_type):
+            raise ValueError(f"Sample decimal {value!r} does not fit {data_type.simpleString()}.")
+    T._make_type_verifier(data_type)(value)
+    return value
+
+
+def _prepare_schema(ruleset: CompiledRuleset, source_schema: T.StructType) -> dict[str, T.DataType]:
+    """Validate metadata and samples using the engine's Spark validator."""
+    prepared = SparkRulesetCompatibilityValidator(authoring.registry()).prepare(
+        ruleset, source_schema
+    )
+    if prepared.validation.has_errors():
+        raise ValueError(prepared.validation.to_text())
+    return {field.name: field.dataType for field in prepared.assignment_schema.fields}
+
+
+def _worker(
+    ruleset: CompiledRuleset,
+    source_schema: T.StructType,
+    assignment_types: dict[str, T.DataType],
+    *,
+    full_audit: bool = False,
+):
+    """Build the canonical Spark worker without starting a local Spark session."""
+    worker = SparkRulesEngineRuntime(object(), authoring.registry())._build_row_evaluator(
+        ruleset,
+        list(assignment_types),
+        assignment_types,
+        full_audit=full_audit,
+        source_schema=source_schema,
+    )
+
+    def evaluate(row: _SparkRow) -> dict[str, Any]:
+        return worker(_SparkRow(row.values, source_schema))
+
+    return evaluate
+
+
+def _evaluation_context(
+    ruleset: CompiledRuleset,
+    rows: list[dict[str, Any]],
+    *,
+    full_audit: bool,
+    source_schema: T.StructType | None,
+):
+    """Build one validated worker and identity for an entire sample batch."""
+    schema = source_schema if source_schema is not None else sample_schema(rows)
+    assignment_types = _prepare_schema(ruleset, schema)
+    worker = _worker(ruleset, schema, assignment_types, full_audit=full_audit)
+    identity = {
+        "id": ruleset.ruleset_id,
+        "version": ruleset.version,
+        "content_hash": DeltaRowSerializer().content_hash(ruleset),
+    }
+    return worker, identity
 
 
 def _focused_rule_context(
     ruleset: Ruleset,
     target_rule: Rule,
     row: Mapping[str, Any],
-    runtime: SparkRowEvaluator,
-) -> tuple[CompiledRule, dict[str, AssignedValue]]:
-    """Compile a rule and reproduce assignments committed before it runs."""
+    source_schema: T.StructType | None,
+) -> _FocusedContext:
+    """Reproduce only values committed before the selected rule is reached."""
     compiled = compile_ruleset(ruleset)
+    schema = source_schema if source_schema is not None else sample_schema([row])
+    assignment_types = _prepare_schema(compiled, schema)
     ordered = tuple(sorted(compiled.rules, key=lambda item: item.rule_order))
     target_index = next(
-        (index for index, rule in enumerate(ordered) if rule.rule_id == target_rule.rule_id),
-        None,
+        (index for index, rule in enumerate(ordered) if rule.rule_id == target_rule.rule_id), None
     )
     if target_index is None:
         raise KeyError(f"Rule {target_rule.rule_id!r} is absent from the current ruleset.")
     compiled_rule = ordered[target_index]
+    if not compiled_rule.active_flag:
+        raise FocusedEvaluationSkipped(f"Rule {target_rule.rule_id!r} is inactive and is skipped.")
     prior_rules = ordered[:target_index]
-    if not prior_rules:
-        return compiled_rule, {}
-
-    context_result = runtime.evaluate_row(
-        replace(compiled, rules=prior_rules),
-        row,
-    )
-    matched_by_id = {
-        rule.rule_id: rule
-        for rule in prior_rules
-        if rule.rule_id in context_result["matched_rule_ids"]
-    }
-    producers: dict[str, tuple[CompiledRule, CompiledAssignment]] = {}
-    for rule_id in context_result["matched_rule_ids"]:
-        prior_rule = matched_by_id[rule_id]
-        for assignment in prior_rule.assignments:
-            producers[assignment.target_field] = (prior_rule, assignment)
-        if prior_rule.stop_on_match:
-            raise FocusedEvaluationSkipped(
-                f"Rule {target_rule.rule_id!r} is not reached because earlier "
-                f"stop-on-match rule {prior_rule.rule_id!r} matched this row."
-            )
-
-    return compiled_rule, {
-        target_field: AssignedValue(
-            value=context_result["assign"][target_field]["value"],
-            rule_id=producer.rule_id,
-            assignment_id=assignment.assignment_id,
+    assigned: dict[str, AssignedValue] = {}
+    if prior_rules:
+        result = _worker(replace(compiled, rules=prior_rules), schema, assignment_types)(
+            _SparkRow(row)
         )
-        for target_field, (producer, assignment) in producers.items()
+        if result["error"]:
+            raise OperandError(result["error"])
+        for rule in prior_rules:
+            if rule.rule_id not in result["matched_rule_ids"]:
+                continue
+            if rule.stop_on_match:
+                raise FocusedEvaluationSkipped(
+                    f"Rule {target_rule.rule_id!r} is not reached because earlier "
+                    f"stop-on-match rule {rule.rule_id!r} matched this row."
+                )
+            for assignment in rule.assignments:
+                assigned[assignment.target_field] = AssignedValue(
+                    value=result["assign"][assignment.target_field]["value"],
+                    rule_id=rule.rule_id,
+                    assignment_id=assignment.assignment_id,
+                )
+    runtime = _SparkRowUdfEvaluator(authoring.registry())
+    source_types = {field.name: field.dataType for field in schema.fields}
+    normalized = {
+        name: runtime._spark_input_value(value, source_types.get(name))
+        for name, value in _sample_input_value(row, schema).items()
     }
+    return _FocusedContext(compiled_rule, normalized, runtime, assigned, assignment_types)
 
 
 def _compiled_condition(
-    group: CompiledConditionGroup,
-    condition_id: str,
+    group: CompiledConditionGroup, condition_id: str
 ) -> tuple[CompiledCondition, CompiledConditionGroup]:
     """Return a compiled condition and its owning group by identifier."""
     for condition in group.conditions:
         if condition.condition_id == condition_id:
             return condition, group
-    for nested_group in group.groups:
+    for nested in group.groups:
         try:
-            return _compiled_condition(nested_group, condition_id)
+            return _compiled_condition(nested, condition_id)
         except KeyError:
             continue
     raise KeyError(f"Condition {condition_id!r} is absent from the selected rule.")
 
 
-def _compiled_assignment(
-    rule: CompiledRule,
-    assignment_id: str,
-) -> CompiledAssignment:
-    """Return a compiled assignment by identifier."""
-    for assignment in rule.assignments:
-        if assignment.assignment_id == assignment_id:
-            return assignment
-    raise KeyError(f"Assignment {assignment_id!r} is absent from the selected rule.")
-
-
 def _temporary_ruleset(rule: Rule) -> Ruleset:
-    """Wrap one draft rule in the minimum compilable ruleset metadata."""
+    """Wrap a focused probe in the minimum valid owned ruleset metadata."""
     return Ruleset(
         ruleset_id="studio_probe",
         ruleset_name="Studio probe",
@@ -195,35 +314,42 @@ def _temporary_ruleset(rule: Rule) -> Ruleset:
     )
 
 
-def _temporary_assignment(operand: Operand) -> Assignment:
-    """Wrap one operand in a temporary assignment for public compiler access."""
-    return Assignment(
-        assignment_id="assignment:studio_probe:value",
-        target_field="value",
-        value=operand,
-    )
-
-
-def _compile_operand(operand: Operand):
-    """Compile one operand by embedding it in a valid public authoring payload."""
-    probe = Rule(
-        rule_id="studio_probe_rule",
-        rule_name="Studio probe rule",
+def _probe_rule(*, condition: Condition | None = None, operand: Operand | None = None) -> Rule:
+    """Build a valid focused operand or condition probe."""
+    return Rule(
+        rule_id="studio_probe",
+        rule_name="Studio probe",
         rule_order=1,
-        conditions=_probe_condition_group(),
-        assignments=[_temporary_assignment(operand)],
+        conditions=ConditionGroup(
+            condition_group_id="group:studio_probe",
+            children=[
+                condition
+                or Condition(
+                    condition_id="condition:studio_probe",
+                    left=Operand(value=True, value_type="boolean"),
+                    operator="eq",
+                    right=Operand(value=True, value_type="boolean"),
+                )
+            ],
+        ),
+        assignments=[
+            Assignment(
+                assignment_id="assignment:studio_probe:value",
+                target_field="studio_probe_value",
+                value=operand or Operand(value=True, value_type="boolean"),
+            )
+        ],
     )
-    return compile_ruleset(_temporary_ruleset(probe)).rules[0].assignments[0].value
 
 
-def _resolved_operand(
-    operand: CompiledOperand,
-    row: Mapping[str, Any],
-    runtime: SparkRowEvaluator,
-    assigned_values: Mapping[str, AssignedValue] | None = None,
-) -> Resolution:
-    """Resolve a compiled operand and adapt its production trace for the UI."""
-    resolved = runtime._resolve_operand_resolution(operand, row, assigned_values)
+def _resolve_assignment(assignment: CompiledAssignment, context: _FocusedContext) -> Resolution:
+    """Resolve once and normalize the proposed value to its canonical Spark type."""
+    resolved = context.runtime._resolve_operand_resolution(
+        assignment.value, context.row, context.assigned
+    )
+    value = context.runtime._spark_assignment_value(
+        resolved.value, context.assignment_types[assignment.target_field]
+    )
     trace = dict(resolved.trace)
     source = str(trace.get("kind") or "operand")
     detail = str(
@@ -233,207 +359,91 @@ def _resolved_operand(
         or trace.get("value_type")
         or source
     )
-    return Resolution(resolved.value, source, detail, trace=trace)
-
-
-def _probe_condition_group():
-    """Return an always-true condition group used by operand probes."""
-    from .schema import ConditionGroup
-
-    return ConditionGroup(
-        condition_group_id="group:studio_probe",
-        children=[
-            Condition(
-                condition_id="condition:studio_probe",
-                left=Operand(kind="literal", value=True, value_type="boolean"),
-                operator="eq",
-                right=Operand(kind="literal", value=True, value_type="boolean"),
-            )
-        ],
-    )
+    return Resolution(value, source, detail, trace=trace)
 
 
 def resolve_operand(
-    operand: Operand,
-    row: dict[str, Any],
-    functions: Any | None = None,
+    operand: Operand, row: dict[str, Any], *, source_schema: T.StructType | None = None
 ) -> Resolution:
-    """
-    Resolve one operand with production runtime behavior.
-
-    Parameters
-    ----------
-    operand : Operand
-        Mutable studio operand.
-    row : dict[str, Any]
-        Input row values.
-    functions : Any | None, default None
-        Retained for API compatibility. The authoritative registry is always
-        used.
-
-    Returns
-    -------
-    Resolution
-        Resolved value and production trace metadata.
-    """
-    del functions
-    try:
-        compiled = _compile_operand(operand)
-        return _resolved_operand(compiled, row, _runtime())
-    except _ENGINE_EXCEPTIONS as exc:
-        raise OperandError(f"{type(exc).__name__}: {exc}") from exc
+    """Resolve an operand in an always-matching, schema-validated production probe."""
+    probe = _probe_rule(operand=operand)
+    return evaluate_assignment(
+        probe.assignments[0],
+        row,
+        ruleset=_temporary_ruleset(probe),
+        owning_rule=probe,
+        source_schema=source_schema,
+    )
 
 
 def evaluate_condition(
     condition: Condition,
     row: dict[str, Any],
-    functions: Any | None = None,
     *,
     ruleset: Ruleset | None = None,
     owning_rule: Rule | None = None,
+    source_schema: T.StructType | None = None,
 ) -> dict[str, Any]:
-    """
-    Evaluate one condition with production comparison and null semantics.
-
-    Parameters
-    ----------
-    condition : Condition
-        Mutable studio condition.
-    row : dict[str, Any]
-        Input row values.
-    functions : Any | None, default None
-        Retained for API compatibility. The authoritative registry is always
-        used.
-
-    Returns
-    -------
-    dict[str, Any]
-        Presentation-ready production condition trace.
-    """
-    del functions
+    """Inspect one condition with production comparison and prior-rule semantics."""
     try:
-        runtime = _runtime()
-        if ruleset is not None and owning_rule is not None:
-            compiled_rule, assigned_values = _focused_rule_context(
-                ruleset,
-                owning_rule,
-                row,
-                runtime,
-            )
-            compiled_condition, compiled_group = _compiled_condition(
-                compiled_rule.root_group,
-                condition.condition_id,
-            )
-        elif ruleset is None and owning_rule is None:
-            probe = Rule(
-                rule_id="studio_condition_probe",
-                rule_name="Studio condition probe",
-                rule_order=1,
-                conditions=_group_for_condition(condition),
-                assignments=[
-                    Assignment(
-                        assignment_id="assignment:studio_condition_probe:matched",
-                        target_field="matched",
-                        value=Operand(kind="literal", value=True, value_type="boolean"),
-                    )
-                ],
-            )
-            compiled_rule = compile_ruleset(_temporary_ruleset(probe)).rules[0]
-            compiled_group = compiled_rule.root_group
-            compiled_condition = compiled_group.conditions[0]
-            assigned_values = None
-        else:
+        if ruleset is None and owning_rule is None:
+            owning_rule = _probe_rule(condition=condition)
+            ruleset = _temporary_ruleset(owning_rule)
+        if ruleset is None or owning_rule is None:
             raise TypeError("ruleset and owning_rule must be supplied together.")
-        trace = runtime._evaluate_condition(
-            compiled_condition,
-            compiled_group,
-            row,
-            assigned_values,
+        context = _focused_rule_context(ruleset, owning_rule, row, source_schema)
+        compiled_condition, group = _compiled_condition(
+            context.rule.root_group, condition.condition_id
         )
-    except _ENGINE_EXCEPTIONS as exc:
+        trace = context.runtime._evaluate_condition(
+            compiled_condition, group, context.row, context.assigned
+        )
+    except OperandError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - custom-function errors belong in the UI.
         raise OperandError(f"{type(exc).__name__}: {exc}") from exc
     payload = asdict(trace)
-    left = payload.get("left") or {}
-    right = payload.get("right") or {}
     payload.update(
         expression=condition.describe(),
         matched=payload["passed"],
-        left_value=left.get("value"),
-        right_value=right.get("value"),
+        left_value=(payload.get("left") or {}).get("value"),
+        right_value=(payload.get("right") or {}).get("value"),
     )
     return payload
-
-
-def _group_for_condition(condition: Condition):
-    """Return a one-condition group with a stable probe identifier."""
-    from .schema import ConditionGroup
-
-    return ConditionGroup(
-        logical_operator="all",
-        condition_group_id="group:studio_condition_probe",
-        children=[condition],
-    )
 
 
 def evaluate_rule(
     rule: Rule,
     row: dict[str, Any],
-    functions: Any | None = None,
     *,
     ruleset: Ruleset | None = None,
+    source_schema: T.StructType | None = None,
 ) -> dict[str, Any]:
-    """
-    Evaluate one rule and return production condition traces.
-
-    Parameters
-    ----------
-    rule : Rule
-        Mutable studio rule.
-    row : dict[str, Any]
-        Input row values.
-    functions : Any | None, default None
-        Retained for API compatibility. The authoritative registry is always
-        used.
-
-    Returns
-    -------
-    dict[str, Any]
-        Match result, assignments, and production condition traces.
-    """
-    del functions
+    """Inspect a reached active rule and its atomic, typed proposed assignments."""
     try:
-        runtime = _runtime()
-        if ruleset is None:
-            compiled_rule = compile_ruleset(_temporary_ruleset(rule)).rules[0]
-            assigned_values = None
-        else:
-            compiled_rule, assigned_values = _focused_rule_context(
-                ruleset,
-                rule,
-                row,
-                runtime,
-            )
-        matched, traces = runtime._evaluate_rule(
-            compiled_rule,
-            row,
-            assigned_values,
+        context = _focused_rule_context(
+            ruleset or _temporary_ruleset(rule), rule, row, source_schema
+        )
+        matched, traces = context.runtime._evaluate_rule(
+            context.rule, context.row, context.assigned
         )
         assignments = (
-            runtime._evaluate_assignments(
-                compiled_rule.assignments,
-                row,
-                assigned_values,
-            )
+            {
+                assignment.target_field: _resolve_assignment(assignment, context).value
+                for assignment in context.rule.assignments
+            }
             if matched
             else {}
         )
-    except _ENGINE_EXCEPTIONS as exc:
+    except OperandError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - custom-function errors belong in the UI.
         raise OperandError(f"{type(exc).__name__}: {exc}") from exc
     return {
-        "rule_id": compiled_rule.rule_id,
-        "rule_order": compiled_rule.rule_order,
+        "rule_id": context.rule.rule_id,
+        "rule_order": context.rule.rule_order,
         "matched": matched,
-        "stop_on_match": compiled_rule.stop_on_match,
+        "stop_on_match": context.rule.stop_on_match,
         "assign": assignments,
         "condition_trace": [asdict(trace) for trace in traces],
     }
@@ -442,259 +452,87 @@ def evaluate_rule(
 def evaluate_assignment(
     assignment: Assignment,
     row: dict[str, Any],
-    functions: Any | None = None,
     *,
     ruleset: Ruleset | None = None,
     owning_rule: Rule | None = None,
+    source_schema: T.StructType | None = None,
 ) -> Resolution:
-    """Resolve one assignment value with production operand behavior."""
+    """Inspect an assignment only when its owning rule can commit successfully."""
     if ruleset is None and owning_rule is None:
-        return resolve_operand(assignment.value, row, functions)
+        return resolve_operand(assignment.value, row, source_schema=source_schema)
     if ruleset is None or owning_rule is None:
         raise OperandError("ruleset and owning_rule must be supplied together.")
-    del functions
     try:
-        runtime = _runtime()
-        compiled_rule, assigned_values = _focused_rule_context(
-            ruleset,
-            owning_rule,
-            row,
-            runtime,
-        )
-        compiled = _compiled_assignment(compiled_rule, assignment.assignment_id)
-        return _resolved_operand(
-            compiled.value,
-            row,
-            runtime,
-            assigned_values,
-        )
-    except _ENGINE_EXCEPTIONS as exc:
+        context = _focused_rule_context(ruleset, owning_rule, row, source_schema)
+        matched, _ = context.runtime._evaluate_rule(context.rule, context.row, context.assigned)
+        if not matched:
+            raise FocusedEvaluationSkipped(
+                f"Assignment {assignment.assignment_id!r} is not applied because "
+                f"rule {owning_rule.rule_id!r} does not match this row."
+            )
+        resolutions = {
+            item.assignment_id: _resolve_assignment(item, context)
+            for item in context.rule.assignments
+        }
+        return resolutions[assignment.assignment_id]
+    except OperandError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - custom-function errors belong in the UI.
         raise OperandError(f"{type(exc).__name__}: {exc}") from exc
 
 
 def result_fields(*, full_audit: bool = False) -> tuple[str, ...]:
-    """Return studio output fields for the requested production audit detail."""
+    """Return fields in the canonical Spark DataFrame output contract."""
     return FULL_AUDIT_FIELDS if full_audit else COMPACT_FIELDS
 
 
 def empty_result(*, full_audit: bool = False) -> dict[str, Any]:
-    """Return the stable studio wrapper around an unevaluated production result."""
+    """Return an unevaluated result when preparation fails before a worker exists."""
     result = {
         "error": None,
         "matched": False,
         "matched_rule_ids": [],
         "assign": {},
+        "ruleset": None,
+        "engine_version": __version__,
     }
     if full_audit:
-        result.update(
-            matched_rules=[],
-            assignment_results=[],
-            ruleset=None,
-            engine_version=__version__,
-        )
+        result.update(matched_rules=[], assignment_results=[])
     return result
 
 
 def evaluate_row(
     ruleset: Ruleset,
     row: dict[str, Any],
-    functions: Any | None = None,
     *,
     full_audit: bool = False,
+    source_schema: T.StructType | None = None,
 ) -> dict[str, Any]:
-    """
-    Evaluate one row using the production worker-side runtime.
-
-    Parameters
-    ----------
-    ruleset : Ruleset
-        Mutable studio draft.
-    row : dict[str, Any]
-        Input row values.
-    functions : Any | None, default None
-        Retained for API compatibility. The authoritative registry is always
-        used.
-    full_audit : bool, default False
-        Include production matched-rule traces, assignment provenance, and
-        immutable engine identity.
-
-    Returns
-    -------
-    dict[str, Any]
-        Production match and assignment result plus a studio error field.
-    """
-    return evaluate_rows(
-        ruleset,
-        [row],
-        functions,
-        full_audit=full_audit,
-    )[0]
+    """Evaluate one sample through the schema-validated production Spark worker."""
+    return evaluate_rows(ruleset, [row], full_audit=full_audit, source_schema=source_schema)[0]
 
 
 def evaluate_rows(
     ruleset: Ruleset,
     rows: list[dict[str, Any]],
-    functions: Any | None = None,
     *,
     full_audit: bool = False,
+    source_schema: T.StructType | None = None,
 ) -> list[dict[str, Any]]:
-    """Evaluate rows while compiling and building audit infrastructure once."""
-    del functions
-    results = [empty_result(full_audit=full_audit) for _ in rows]
+    """Compile and validate once, then execute each row exactly once at either detail."""
     if not rows:
-        return results
+        return []
     try:
         compiled = compile_ruleset(ruleset)
-        runtime = _runtime()
-    except _ENGINE_EXCEPTIONS as exc:
-        error = f"{type(exc).__name__}: {exc}"
+        worker, identity = _evaluation_context(
+            compiled, rows, full_audit=full_audit, source_schema=source_schema
+        )
+    except Exception as exc:  # noqa: BLE001 - render compilation and custom binding errors.
+        results = [empty_result(full_audit=full_audit) for _ in rows]
         for result in results:
-            result["error"] = error
-        return results
-
-    compacts: list[dict[str, Any] | None] = []
-    for row, result in zip(rows, results, strict=True):
-        try:
-            compact = runtime.evaluate_row(compiled, row)
-        except _ENGINE_EXCEPTIONS as exc:
             result["error"] = f"{type(exc).__name__}: {exc}"
-            compacts.append(None)
-            continue
-        compacts.append(compact)
-        if not full_audit:
-            result.update(compact)
-
-    if not full_audit:
         return results
-
-    successful = [
-        (row, compact)
-        for row, compact in zip(rows, compacts, strict=True)
-        if compact is not None
-    ]
-    if not successful:
-        return results
-    try:
-        evaluator, identity = _full_audit_context(
-            compiled,
-            [row for row, _ in successful],
-            [compact for _, compact in successful],
-        )
-    except _ENGINE_EXCEPTIONS as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        for result, compact in zip(results, compacts, strict=True):
-            if compact is not None:
-                result["error"] = error
-        return results
-
-    for row, compact, result in zip(rows, compacts, results, strict=True):
-        if compact is None:
-            continue
-        try:
-            result.update(
-                _full_audit_result(
-                    row,
-                    compact,
-                    evaluator=evaluator,
-                    identity=identity,
-                )
-            )
-        except _ENGINE_EXCEPTIONS as exc:
-            result["error"] = f"{type(exc).__name__}: {exc}"
+    results = [worker(_SparkRow(row)) for row in rows]
+    for result in results:
+        result.update(ruleset=dict(identity), engine_version=__version__)
     return results
-
-
-def _full_audit_context(
-    ruleset: CompiledRuleset,
-    rows: list[Mapping[str, Any]],
-    compacts: list[Mapping[str, Any]],
-) -> tuple[Any, dict[str, str]]:
-    """Build one full-audit evaluator and immutable identity for a row batch."""
-    assignment_fields = sorted(
-        {assignment.target_field for rule in ruleset.rules for assignment in rule.assignments}
-    )
-    assignment_types = {
-        field_name: _spark_type_for_assignment_batch(field_name, rows, compacts)
-        for field_name in assignment_fields
-    }
-    evaluator = SparkRulesEngineRuntime(object(), authoring.registry())._build_row_evaluator(
-        ruleset,
-        assignment_fields,
-        assignment_types,
-        full_audit=True,
-    )
-    identity = {
-        "id": ruleset.ruleset_id,
-        "version": ruleset.version,
-        "content_hash": DeltaRowSerializer().content_hash(ruleset),
-    }
-    return evaluator, identity
-
-
-def _full_audit_result(
-    row: Mapping[str, Any],
-    compact: Mapping[str, Any],
-    *,
-    evaluator: Any,
-    identity: Mapping[str, str],
-) -> dict[str, Any]:
-    """Evaluate one row with the production Spark worker full-audit contract."""
-    audit = evaluator(_SparkRow(row))
-    for field_name in COMPACT_FIELDS:
-        if field_name != "error":
-            audit[field_name] = compact[field_name]
-    audit.update(
-        ruleset=dict(identity),
-        engine_version=__version__,
-    )
-    return audit
-
-
-def _spark_type_for_assignment_batch(
-    field_name: str,
-    rows: list[Mapping[str, Any]],
-    compacts: list[Mapping[str, Any]],
-) -> T.DataType:
-    """Infer one stable Spark normalization type across a production row batch."""
-    values: list[Any] = []
-    for row, compact in zip(rows, compacts, strict=True):
-        assignment = compact.get("assign", {}).get(field_name, {})
-        values.append(
-            assignment.get("value") if assignment.get("applied") else row.get(field_name)
-        )
-    inferred: list[T.DataType] = []
-    for value in values:
-        if value is None:
-            continue
-        try:
-            data_type = T._infer_type(value)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(data_type, T.NullType):
-            inferred.append(data_type)
-    if not inferred:
-        return T.StringType()
-    if all(data_type == inferred[0] for data_type in inferred[1:]):
-        return inferred[0]
-    numeric_types = (
-        T.ByteType,
-        T.ShortType,
-        T.IntegerType,
-        T.LongType,
-        T.FloatType,
-        T.DoubleType,
-        T.DecimalType,
-    )
-    if all(isinstance(data_type, numeric_types) for data_type in inferred):
-        if any(isinstance(data_type, T.DecimalType) for data_type in inferred):
-            return T.DecimalType(38, 18)
-        if any(isinstance(data_type, (T.FloatType, T.DoubleType)) for data_type in inferred):
-            return T.DoubleType()
-        return T.LongType()
-    try:
-        merged = inferred[0]
-        for data_type in inferred[1:]:
-            merged = T._merge_type(merged, data_type)
-        return merged
-    except (TypeError, ValueError):
-        return T.StringType()

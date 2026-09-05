@@ -120,8 +120,7 @@ rules:
     value:
       literal:
         status: eligible
-        basis: CurrentDSCR
-        threshold: 1.25
+        policy: CurrentDSCR >= 1.25
 - rule_id: non_dscr_risk_review
   rule_name: Non-DSCR risk review
   rule_order: 30

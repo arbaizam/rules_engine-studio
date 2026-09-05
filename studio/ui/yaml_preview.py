@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 import streamlit as st
 
@@ -82,16 +83,23 @@ def workspace_columns():
 
 def current_snapshot() -> yaml_io.YamlSnapshot:
     """Return the cached compiler snapshot for the fully rendered live draft."""
-    return _cached_snapshot(state.draft().to_dict(), tuple(state.columns()))
+    snapshot = _cached_snapshot(state.draft(), tuple(state.columns()))
+    editor_issues = tuple(
+        yaml_io.Issue("error", "Editor", message, "INPUT_PARSE_FAILED")
+        for message in state.editor_errors().values()
+    )
+    if editor_issues:
+        return replace(snapshot, issues=(*snapshot.issues, *editor_issues))
+    return snapshot
 
 
-@st.cache_data(show_spinner=False, max_entries=32)
+@st.cache_data(show_spinner=False, max_entries=32, hash_funcs={Ruleset: Ruleset.to_dict})
 def _cached_snapshot(
-    payload: dict,
+    ruleset: Ruleset,
     columns: tuple[str, ...],
 ) -> yaml_io.YamlSnapshot:
-    """Compile a payload once for all YAML and validation surfaces on a rerun."""
-    return yaml_io.build_snapshot(Ruleset.from_dict(payload), columns)
+    """Compile the actual draft without reconstructing or repairing invalid metadata."""
+    return yaml_io.build_snapshot(ruleset, columns)
 
 
 def render(snapshot: yaml_io.YamlSnapshot) -> None:

@@ -201,10 +201,7 @@ class RulesEngineService:
         """
         Return readable rule metadata rows for a supplied or loaded ruleset.
         """
-        if ruleset is None:
-            if ruleset_name is None:
-                raise ValueError("ruleset or ruleset_name is required.")
-            ruleset = self.load_published(ruleset_name, version)
+        ruleset = self._resolve_ruleset(ruleset, ruleset_name, version)
         return self.rule_formatter.describe_rules(ruleset)
 
     def evaluate_dataframe(
@@ -214,7 +211,7 @@ class RulesEngineService:
         ruleset: Ruleset | None = None,
         ruleset_name: str | None = None,
         version: str | None = None,
-        key_columns: Sequence[str],
+        key_columns: Sequence[str] | None = None,
         column_prefix: str = "rules_engine",
         fail_on_error: bool = True,
         include_error_traceback: bool = False,
@@ -222,11 +219,13 @@ class RulesEngineService:
     ) -> DataFrameEvaluation:
         """
         Evaluate keyed Spark rows using a supplied or loaded ruleset.
+
+        When ``key_columns`` is omitted, every input column is used so the
+        result projection retains the complete source record. Pass explicit
+        keys when rules overwrite existing columns or a compact result is
+        preferred.
         """
-        if ruleset is None:
-            if ruleset_name is None:
-                raise ValueError("ruleset or ruleset_name is required.")
-            ruleset = self.load_published(ruleset_name, version)
+        ruleset = self._resolve_ruleset(ruleset, ruleset_name, version)
         return self.runtime.evaluate_dataframe(
             df,
             ruleset,
@@ -252,10 +251,7 @@ class RulesEngineService:
         Computing aggregate counts starts one Spark action. The returned
         no-match DataFrame is a filtered view of that evaluation.
         """
-        if ruleset is None:
-            if ruleset_name is None:
-                raise ValueError("ruleset or ruleset_name is required.")
-            ruleset = self.load_published(ruleset_name, version)
+        ruleset = self._resolve_ruleset(ruleset, ruleset_name, version)
         return self.coverage_analyzer.analyze(
             df,
             ruleset,
@@ -278,3 +274,16 @@ class RulesEngineService:
             version,
             retired_by=retired_by,
         )
+
+    def _resolve_ruleset(
+        self,
+        ruleset: Ruleset | None,
+        ruleset_name: str | None,
+        version: str | None,
+    ) -> Ruleset:
+        """Use a supplied ruleset or load the requested published version."""
+        if ruleset is not None:
+            return ruleset
+        if ruleset_name is None:
+            raise ValueError("ruleset or ruleset_name is required.")
+        return self.load_published(ruleset_name, version)

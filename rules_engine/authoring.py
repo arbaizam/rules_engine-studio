@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from rules_engine.canonical_values import LITERAL_TYPE_HINTS
 from rules_engine.enums import (
     COLLECTION_LITERAL_OPERATORS,
+    TOLERANCE_OPERATORS,
     UNARY_OPERATORS,
     ComparisonOperator,
     LogicalOperator,
@@ -21,32 +23,9 @@ from rules_engine.version import __version__
 
 AUTHORING_MANIFEST_VERSION = 1
 
-# Canonical editor choices and their accepted persisted aliases. Collection
-# shapes and null are represented by literal values, not by ``value_type``.
-LITERAL_TYPE_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("string", ("str",)),
-    ("integer", ("int", "long")),
-    ("decimal", ()),
-    ("double", ("float", "number")),
-    ("boolean", ("bool",)),
-    ("date", ()),
-    ("timestamp", ()),
-    ("timestamp_ntz", ()),
-)
-
 _PAIR_OPERATORS = {
     ComparisonOperator.BETWEEN,
     ComparisonOperator.NOT_BETWEEN,
-}
-_TOLERANCE_OPERATORS = {
-    ComparisonOperator.EQ,
-    ComparisonOperator.NE,
-    ComparisonOperator.GT,
-    ComparisonOperator.GE,
-    ComparisonOperator.LT,
-    ComparisonOperator.LE,
-    ComparisonOperator.IN,
-    ComparisonOperator.NOT_IN,
 }
 
 
@@ -77,7 +56,7 @@ def build_authoring_manifest(registry: FunctionRegistry) -> dict[str, Any]:
                 "name": operator.value,
                 "arity": 1 if operator in UNARY_OPERATORS else 2,
                 "right_operand_shape": _right_operand_shape(operator),
-                "supports_tolerance": operator in _TOLERANCE_OPERATORS,
+                "supports_tolerance": operator in TOLERANCE_OPERATORS,
             }
             for operator in ComparisonOperator
         ],

@@ -9,6 +9,9 @@ delegated to the pinned production package. Editor choices are built from the
 engine-owned authoring manifest using the same function registry as validation
 and evaluation.
 
+The current engine is **3.0**, pinned to refactor branch `simplify_harden` at
+`ad26d54a8b57fd359b3ff3c0b9addf87f9b43f3f`. Studio targets this contract directly.
+
 ## Capabilities
 
 - Author ordered rules with nested `all` / `any` groups.
@@ -27,7 +30,7 @@ and evaluation.
   exact named argument contracts.
 - Upload CSV, TSV, JSON, or Parquet test data and edit it in the browser.
 - Evaluate one condition, rule, assignment, row, or the entire uploaded file
-  with `SparkRowEvaluator`, the production worker-side row implementation.
+  with the production row evaluator and Spark worker result contract.
 - Import and export YAML through `YamlRulesetCompiler` and
   `YamlRulesetExporter`.
 - Watch a collapsible, read-only YAML preview update beside the active editor,
@@ -54,7 +57,7 @@ remain explicit downloads.
 | `studio/authoring.py` | Cached engine manifest, shared registry, compiler, and semantic validator adapter |
 | `studio/schema.py` | Mutable draft models plus Studio-owned labels and widget state |
 | `studio/custom_functions.py` | Manifest-backed function metadata and runtime calls |
-| `studio/engine.py` | `SparkRowEvaluator` adapter |
+| `studio/engine.py` | Production row evaluation, sample schema preparation, and Spark worker results |
 | `studio/yaml_io.py` | Production compiler, exporter, and validator adapter |
 | `studio/ui/` | Streamlit authoring and test views |
 | `studio/ui/reorder.py` | Integrated mouse, touch, and keyboard rule sorter |
@@ -69,8 +72,25 @@ vendored from a pinned production commit. See
 [`docs/VENDORED_RULES_ENGINE.md`](docs/VENDORED_RULES_ENGINE.md) for provenance
 and upgrade instructions.
 
-CSV checks describe the uploaded sample only. Exact production Spark-schema
-compatibility remains a future integration with a deployed validation endpoint.
+Sample evaluation uses the engine's Spark compatibility validator against types
+inferred from the uploaded rows. These checks describe the sample, not a remote
+table. Exact production compatibility requires validating against the actual
+Databricks DataFrame schema. No Spark session or JVM is needed for Studio's
+local row tests.
+
+JSON sample imports preserve exact decimal numbers and reject duplicate keys.
+Date-named columns are inferred as dates only when every non-null value is a
+valid date-only value. Invalid date text and timestamp strings remain visible;
+use explicit conversion functions for text that needs parsing. CSV type inference
+is advisory; use JSON or Parquet when explicit value types matter.
+
+## Hosting
+
+Streamlit remains the UI framework for both Streamlit Cloud and the eventual
+Databricks Apps deployment. `app.yaml` supplies the Streamlit entrypoint for
+Databricks Apps; enabling Apps and configuring a remote workspace is separate
+from this local authoring surface. Browser autosave is specific to the hosting
+origin, so download canonical YAML to transfer drafts between hosts.
 
 The checked-in examples are generated from the same canonical starter project:
 

@@ -18,8 +18,12 @@ def render(snapshot: yaml_io.YamlSnapshot) -> None:
     ruleset = state.draft()
     issues = list(snapshot.issues)
 
-    st.subheader("Checks")
-    issue_list(issues, "Checks")
+    st.subheader("Metadata checks")
+    issue_list(issues, "Metadata checks")
+    st.caption(
+        "These checks validate the ruleset contract. The Evaluate tab also checks "
+        "inferred sample types; publishing in Databricks requires the actual table schema."
+    )
 
     st.subheader("Canonical export")
     document = ""
@@ -53,8 +57,11 @@ def render(snapshot: yaml_io.YamlSnapshot) -> None:
 def _with_header(body: str, ruleset: Ruleset) -> str:
     """Add non-semantic authoring comments to canonical YAML text."""
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    identity = "\n".join(
+        f"# {line}" for line in f"{ruleset.ruleset_id} {ruleset.version}".splitlines()
+    )
     return (
-        f"# {ruleset.ruleset_id} {ruleset.version}\n"
+        f"{identity}\n"
         f"# Drafted in Rules Engine Studio on {stamp}\n"
         f"{body}"
     )
@@ -72,7 +79,7 @@ def _import() -> None:
             "YAML file", type=["yaml", "yml"], key="ruleset_upload", label_visibility="collapsed"
         )
         if upload is not None and st.button("Replace draft with this file", key="do_ruleset_upload"):
-            _load(upload.getvalue().decode("utf-8"))
+            _load(upload.getvalue())
 
     with cols[1]:
         pasted = st.text_area(
@@ -91,9 +98,11 @@ def _import() -> None:
             _load(pasted)
 
 
-def _load(text: str) -> None:
+def _load(text: str | bytes) -> None:
     """Compile imported YAML and replace the current mutable draft."""
     try:
+        if isinstance(text, bytes):
+            text = text.decode("utf-8-sig")
         ruleset = yaml_io.from_yaml(text)
     except (RulesEngineError, TypeError, UnicodeError, ValueError) as exc:
         st.error(f"Could not read that ruleset: {exc}")

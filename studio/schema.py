@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -100,9 +101,7 @@ UNARY_OPERATORS = frozenset(operator.name for operator in OPERATORS if operator.
 TOLERANCE_OPERATORS = frozenset(
     operator.name for operator in OPERATORS if operator.supports_tolerance
 )
-SCALAR_LITERAL_TYPES = tuple(
-    str(contract["name"]) for contract in authoring.literal_type_hints()
-)
+SCALAR_LITERAL_TYPES = tuple(str(contract["name"]) for contract in authoring.literal_type_hints())
 # Collections and null are Studio editor shapes, not engine ``value_type`` hints.
 STUDIO_LITERAL_SHAPES = ("array", "struct", "null")
 LITERAL_TYPES = (*SCALAR_LITERAL_TYPES, *STUDIO_LITERAL_SHAPES)
@@ -115,12 +114,34 @@ def _uid() -> str:
     return uuid.uuid4().hex[:10]
 
 
+def _checked_mapping(
+    data: Any, allowed: set[str], label: str, required: set[str] = frozenset()
+) -> Mapping[str, Any]:
+    """Reject structural corruption instead of dropping unsupported draft data."""
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{label} must be a mapping.")
+    unsupported = set(data) - allowed
+    if unsupported:
+        raise ValueError(f"{label} contains unsupported keys: {sorted(map(repr, unsupported))}.")
+    missing = required - set(data)
+    if missing:
+        raise ValueError(f"{label} is missing required keys: {sorted(missing)}.")
+    return data
+
+
+def _list_items(value: Any, label: str) -> list[Any]:
+    """Require a collection without silently discarding malformed entries."""
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list.")
+    return value
+
+
 def _copy_argument(value: Any) -> Any:
     """Copy a function argument while preserving nested operand objects."""
     if isinstance(value, Operand):
         return value.copy()
     if isinstance(value, Mapping):
-        return {str(key): _copy_argument(item) for key, item in value.items()}
+        return {key: _copy_argument(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_copy_argument(item) for item in value]
     if isinstance(value, tuple):
@@ -135,7 +156,7 @@ def _argument_to_payload(value: Any) -> Any:
     if isinstance(value, Operand):
         return value.to_dict()
     if isinstance(value, Mapping):
-        return {str(key): _argument_to_payload(item) for key, item in value.items()}
+        return {key: _argument_to_payload(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_argument_to_payload(item) for item in value]
     if isinstance(value, tuple):
@@ -151,7 +172,7 @@ def _argument_from_payload(value: Any) -> Any:
         operand_keys = set(OPERAND_KINDS) & set(value)
         if operand_keys:
             return Operand.from_dict(value)
-        return {str(key): _argument_from_payload(item) for key, item in value.items()}
+        return {key: _argument_from_payload(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_argument_from_payload(item) for item in value]
     if isinstance(value, tuple):
@@ -225,20 +246,19 @@ class Operand:
                 "custom_function": {
                     "name": self.function,
                     "args": {
-                        str(name): _argument_to_payload(value) for name, value in self.args.items()
+                        name: _argument_to_payload(value) for name, value in self.args.items()
                     },
                 }
             }
-        else:
+        elif self.kind == "literal":
             payload = {"literal": self.value}
-            value_type = authoring.canonical_literal_type_hint(self.value_type or "")
-            if value_type and value_type not in {*STUDIO_LITERAL_SHAPES, "list"}:
-                payload["value_type"] = value_type
+            if self.value_type is not None and self.value_type not in STUDIO_LITERAL_SHAPES:
+                payload["value_type"] = self.value_type
+        else:
+            raise ValueError(f"Unsupported operand kind: {self.kind!r}.")
         if self.default_if_null is not None:
             fallback = self.default_if_null.to_dict()
-            if set(fallback) == {"literal"} and not isinstance(
-                fallback["literal"], Mapping
-            ):
+            if set(fallback) == {"literal"} and not isinstance(fallback["literal"], Mapping):
                 payload["default_if_null"] = fallback["literal"]
             else:
                 payload["default_if_null"] = fallback
@@ -260,47 +280,54 @@ class Operand:
             Mutable studio operand.
         """
         if not isinstance(data, Mapping):
-            return cls(kind="literal", value=data, value_type=infer_literal_type(data))
+            return cls(kind="literal", value=deepcopy(data), value_type=None)
+        operand_keys = set(data) & set(OPERAND_KINDS)
+        if len(operand_keys) != 1:
+            raise ValueError("Operand must define exactly one operand kind.")
+        kind = next(iter(operand_keys))
+        _checked_mapping(
+            data,
+            {kind, "default_if_null"} | ({"value_type"} if kind == "literal" else set()),
+            "Operand",
+        )
         default = data.get("default_if_null")
         default_operand = None
-        if default is not None:
+        if "default_if_null" in data:
             default_operand = (
                 cls.from_dict(default)
-                if isinstance(default, Mapping) and "literal" in default
-                else cls(kind="literal", value=default, value_type=infer_literal_type(default))
+                if isinstance(default, Mapping)
+                else cls(kind="literal", value=deepcopy(default), value_type=None)
             )
         if "field" in data:
             return cls(
                 kind="field",
-                field_name=str(data.get("field") or ""),
+                field_name=data["field"],
                 default_if_null=default_operand,
             )
         if "assigned" in data:
             return cls(
                 kind="assigned",
-                assigned_field=str(data.get("assigned") or ""),
+                assigned_field=data["assigned"],
                 default_if_null=default_operand,
             )
         if "custom_function" in data:
-            function = data.get("custom_function")
-            if not isinstance(function, Mapping):
-                function = {}
-            arguments = function.get("args")
+            function = _checked_mapping(
+                data["custom_function"], {"name", "args"}, "Function", {"name"}
+            )
+            arguments = function.get("args", {})
             if not isinstance(arguments, Mapping):
-                arguments = {}
+                raise ValueError("Custom function args must be a mapping.")
             return cls(
                 kind="custom_function",
-                function=str(function.get("name") or ""),
-                args={
-                    str(name): _argument_from_payload(value) for name, value in arguments.items()
-                },
+                function=function.get("name", ""),
+                args={name: _argument_from_payload(value) for name, value in arguments.items()},
                 default_if_null=default_operand,
             )
         value = data.get("literal")
         return cls(
             kind="literal",
-            value=value,
-            value_type=normalize_literal_editor_type(data.get("value_type"), value),
+            value=deepcopy(value),
+            value_type=data.get("value_type"),
             default_if_null=default_operand,
         )
 
@@ -313,7 +340,7 @@ class Operand:
             value=_copy_argument(self.value),
             value_type=self.value_type,
             function=self.function,
-            args={str(name): _copy_argument(value) for name, value in self.args.items()},
+            args={name: _copy_argument(value) for name, value in self.args.items()},
             default_if_null=self.default_if_null.copy() if self.default_if_null else None,
         )
 
@@ -326,8 +353,14 @@ def infer_literal_type(value: Any) -> str:
         return "boolean"
     if isinstance(value, int):
         return "integer"
-    if isinstance(value, (float, Decimal)):
+    if isinstance(value, float):
+        return "double"
+    if isinstance(value, Decimal):
         return "decimal"
+    if isinstance(value, datetime):
+        return "timestamp" if value.utcoffset() is not None else "timestamp_ntz"
+    if isinstance(value, date):
+        return "date"
     if isinstance(value, (list, tuple, set)):
         return "array"
     if isinstance(value, Mapping):
@@ -339,8 +372,7 @@ def normalize_literal_editor_type(type_hint: Any, value: Any) -> str:
     """Normalize manifest aliases and Studio collection shapes for editing."""
     if type_hint is None or str(type_hint) == "":
         return infer_literal_type(value)
-    normalized = "array" if str(type_hint) == "list" else str(type_hint)
-    return authoring.canonical_literal_type_hint(normalized)
+    return authoring.canonical_literal_type_hint(str(type_hint).lower())
 
 
 @dataclass
@@ -372,26 +404,43 @@ class Condition:
             "left": self.left.to_dict(),
             "operator": self.operator,
         }
-        if self.operator not in UNARY_OPERATORS and self.right is not None:
+        if self.right is not None:
             payload["right"] = self.right.to_dict()
-        payload["tolerance_abs"] = format(Decimal(str(self.tolerance_abs)), "f")
-        if self.error_on_null:
-            payload["error_on_null"] = True
+        payload["tolerance_abs"] = (
+            format(self.tolerance_abs, "f")
+            if isinstance(self.tolerance_abs, Decimal)
+            else self.tolerance_abs
+        )
+        payload["error_on_null"] = self.error_on_null
         payload["active_flag"] = self.active_flag
         return payload
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Condition:
         """Restore a condition from canonical authoring data."""
+        _checked_mapping(
+            data,
+            {
+                "condition_id",
+                "left",
+                "operator",
+                "right",
+                "tolerance_abs",
+                "error_on_null",
+                "active_flag",
+            },
+            "Condition",
+            {"left", "operator"},
+        )
         right = data.get("right")
         return cls(
             left=Operand.from_dict(data.get("left")),
-            operator=str(data.get("operator") or "eq"),
+            operator=data.get("operator", "eq"),
             right=Operand.from_dict(right) if right is not None else None,
-            condition_id=str(data.get("condition_id") or f"condition:{_uid()}"),
+            condition_id=data.get("condition_id", f"condition:{_uid()}"),
             tolerance_abs=Decimal(str(data.get("tolerance_abs", "0"))),
-            error_on_null=bool(data.get("error_on_null", False)),
-            active_flag=bool(data.get("active_flag", True)),
+            error_on_null=data.get("error_on_null", False),
+            active_flag=data.get("active_flag", True),
         )
 
     def copy(self) -> Condition:
@@ -430,21 +479,21 @@ class ConditionGroup:
     @classmethod
     def from_dict(cls, data: Any) -> ConditionGroup:
         """Restore a condition group from canonical authoring data."""
-        if not isinstance(data, Mapping):
-            return cls()
-        logical_operator = "any" if "any" in data else "all"
-        items = data.get(logical_operator)
-        if not isinstance(items, list):
-            items = []
+        _checked_mapping(data, {*LOGIC_MODES, "condition_group_id"}, "Condition group")
+        logical_keys = set(data) & set(LOGIC_MODES)
+        if len(logical_keys) != 1:
+            raise ValueError("Condition group must define exactly one logical operator.")
+        logical_operator = next(iter(logical_keys))
+        items = _list_items(data[logical_operator], "Condition group children")
         children: list[Condition | ConditionGroup] = []
         for item in items:
             if isinstance(item, Mapping) and ({"all", "any"} & set(item)):
                 children.append(cls.from_dict(item))
-            elif isinstance(item, Mapping):
+            else:
                 children.append(Condition.from_dict(item))
         return cls(
             logical_operator=logical_operator,
-            condition_group_id=str(data.get("condition_group_id") or f"group:{_uid()}"),
+            condition_group_id=data.get("condition_group_id", f"group:{_uid()}"),
             children=children,
         )
 
@@ -485,10 +534,16 @@ class Assignment:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Assignment:
         """Restore an assignment from canonical authoring data."""
+        _checked_mapping(
+            data,
+            {"target_field", "value", "assignment_id"},
+            "Assignment",
+            {"target_field", "value"},
+        )
         return cls(
-            target_field=str(data.get("target_field") or ""),
+            target_field=data.get("target_field", ""),
             value=Operand.from_dict(data.get("value")),
-            assignment_id=str(data.get("assignment_id") or f"assignment:{_uid()}"),
+            assignment_id=data.get("assignment_id", f"assignment:{_uid()}"),
         )
 
     def copy(self) -> Assignment:
@@ -506,7 +561,7 @@ class Rule:
 
     rule_id: str = ""
     rule_name: str = ""
-    description: str = ""
+    description: str | None = None
     rule_order: int = 0
     active_flag: bool = True
     stop_on_match: bool = False
@@ -523,7 +578,7 @@ class Rule:
             "active_flag": self.active_flag,
             "stop_on_match": self.stop_on_match,
         }
-        if self.description:
+        if self.description is not None:
             payload["description"] = self.description
         payload["when"] = self.conditions.to_dict()
         payload["assign"] = [assignment.to_dict() for assignment in self.assignments]
@@ -532,18 +587,32 @@ class Rule:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Rule:
         """Restore a rule from canonical authoring data."""
+        _checked_mapping(
+            data,
+            {
+                "rule_id",
+                "rule_name",
+                "description",
+                "rule_order",
+                "active_flag",
+                "stop_on_match",
+                "when",
+                "assign",
+            },
+            "Rule",
+            {"rule_name", "when", "assign"},
+        )
         return cls(
-            rule_id=str(data.get("rule_id") or ""),
-            rule_name=str(data.get("rule_name") or ""),
-            description=str(data.get("description") or ""),
-            rule_order=int(data.get("rule_order") or 0),
-            active_flag=bool(data.get("active_flag", True)),
-            stop_on_match=bool(data.get("stop_on_match", False)),
+            rule_id=data.get("rule_id", ""),
+            rule_name=data.get("rule_name", ""),
+            description=data.get("description"),
+            rule_order=data.get("rule_order", 0),
+            active_flag=data.get("active_flag", True),
+            stop_on_match=data.get("stop_on_match", False),
             conditions=ConditionGroup.from_dict(data.get("when")),
             assignments=[
                 Assignment.from_dict(assignment)
-                for assignment in data.get("assign", [])
-                if isinstance(assignment, Mapping)
+                for assignment in _list_items(data.get("assign", []), "Assignments")
             ],
         )
 
@@ -568,9 +637,9 @@ class Ruleset:
     ruleset_id: str = "untitled_ruleset"
     ruleset_name: str = "Untitled ruleset"
     version: str = "0.1.0"
-    description: str = ""
-    owner: str = ""
-    owner_department: str = ""
+    description: str | None = None
+    owner: str | None = None
+    owner_department: str | None = None
     rules: list[Rule] = field(default_factory=list)
 
     def ordered_rules(self) -> list[Rule]:
@@ -584,11 +653,11 @@ class Ruleset:
             "ruleset_name": self.ruleset_name,
             "version": self.version,
         }
-        if self.description:
+        if self.description is not None:
             payload["description"] = self.description
-        if self.owner:
+        if self.owner is not None:
             payload["owner"] = self.owner
-        if self.owner_department:
+        if self.owner_department is not None:
             payload["owner_department"] = self.owner_department
         payload["rules"] = [rule.to_dict() for rule in self.ordered_rules()]
         return payload
@@ -608,18 +677,28 @@ class Ruleset:
         Ruleset
             Mutable studio ruleset.
         """
-        if not isinstance(data, Mapping):
-            raise ValueError("Ruleset file must contain a mapping at the top level.")
+        _checked_mapping(
+            data,
+            {
+                "ruleset_id",
+                "ruleset_name",
+                "version",
+                "description",
+                "owner",
+                "owner_department",
+                "rules",
+            },
+            "Ruleset",
+            {"ruleset_id", "ruleset_name", "version", "rules"},
+        )
         return cls(
-            ruleset_id=str(data.get("ruleset_id") or "untitled_ruleset"),
-            ruleset_name=str(data.get("ruleset_name") or "Untitled ruleset"),
-            version=str(data.get("version") or "0.1.0"),
-            description=str(data.get("description") or ""),
-            owner=str(data.get("owner") or ""),
-            owner_department=str(data.get("owner_department") or ""),
-            rules=[
-                Rule.from_dict(rule) for rule in data.get("rules", []) if isinstance(rule, Mapping)
-            ],
+            ruleset_id=data.get("ruleset_id", "untitled_ruleset"),
+            ruleset_name=data.get("ruleset_name", "Untitled ruleset"),
+            version=data.get("version", "0.1.0"),
+            description=data.get("description"),
+            owner=data.get("owner"),
+            owner_department=data.get("owner_department"),
+            rules=[Rule.from_dict(rule) for rule in _list_items(data.get("rules", []), "Rules")],
         )
 
 

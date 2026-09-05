@@ -2,18 +2,25 @@
 YAML exporter for canonical ruleset metadata.
 
 The exporter writes the same authoring vocabulary accepted by
-``YamlRulesetCompiler`` for deterministic persistence and review.
+``YamlRulesetCompiler`` for deterministic authoring and review. Persisted
+ruleset documents are encoded separately by ``model_codec.py``.
 """
 
 from __future__ import annotations
 
-from dataclasses import is_dataclass
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from rules_engine.canonical_values import (
+    normalize_literal,
+    normalize_mapping_keys,
+    validate_literal,
+    validate_string_mapping_keys,
+)
 from rules_engine.models import (
     AssignedOperand,
     Assignment,
@@ -173,6 +180,7 @@ class YamlRulesetExporter:
         elif isinstance(operand, AssignedOperand):
             payload = {"assigned": operand.target_field}
         elif isinstance(operand, LiteralOperand):
+            validate_literal(operand.value, operand.value_type)
             payload = {"literal": self._export_value(operand.value)}
             if operand.value_type is not None:
                 payload["value_type"] = operand.value_type
@@ -180,17 +188,17 @@ class YamlRulesetExporter:
             payload = {
                 "custom_function": {
                     "name": operand.function_name,
-                    "args": {
-                        str(key): self._export_arg_value(value)
-                        for key, value in operand.args.items()
-                    },
+                    "args": self._export_mapping(
+                        operand.args,
+                        self._export_arg_value,
+                    ),
                 }
             }
         else:
             raise TypeError(f"Unsupported operand type: {type(operand).__name__}")
         if operand.default_if_null is not None:
             default = operand.default_if_null
-            if default.value_type is not None or isinstance(default.value, dict):
+            if default.value_type is not None or isinstance(default.value, Mapping):
                 payload["default_if_null"] = self._export_operand(default)
             else:
                 payload["default_if_null"] = self._export_value(default.value)
@@ -206,21 +214,8 @@ class YamlRulesetExporter:
         """
         Recursively convert Python values into YAML-safe scalar/list/dict values.
         """
-        if isinstance(value, Decimal):
-            return value
-        if isinstance(value, tuple):
-            return tuple(self._export_value(item) for item in value)
-        if isinstance(value, list):
-            return [self._export_value(item) for item in value]
-        if isinstance(value, set):
-            return {self._export_value(item) for item in value}
-        if isinstance(value, dict):
-            return {str(key): self._export_value(item) for key, item in value.items()}
-        if is_dataclass(value):
-            raise TypeError(
-                f"Dataclass values are not YAML-authoring literals: {type(value).__name__}"
-            )
-        return value
+        validate_literal(value)
+        return normalize_literal(value, normalize_untyped_float=False)
 
     def _export_arg_value(self, value: Any) -> Any:
         """
@@ -237,6 +232,19 @@ class YamlRulesetExporter:
             return [self._export_arg_value(item) for item in value]
         if isinstance(value, set):
             return {self._export_arg_value(item) for item in value}
-        if isinstance(value, dict):
-            return {str(key): self._export_arg_value(item) for key, item in value.items()}
+        if isinstance(value, Mapping):
+            if set(value) & {"field", "assigned", "literal", "custom_function"}:
+                # Explicitly escape static mappings that resemble operand syntax.
+                # The canonical persistence codec also supports dynamic mappings.
+                return {"literal": self._export_value(value)}
+            return self._export_mapping(value, self._export_arg_value)
         return self._export_value(value)
+
+    def _export_mapping(
+        self,
+        value: Mapping[Any, Any],
+        export_value: Callable[[Any], Any],
+    ) -> dict[str, Any]:
+        """String-normalize mapping keys without silently merging values."""
+        validate_string_mapping_keys(value)
+        return normalize_mapping_keys(value, export_value, "Exported mapping")

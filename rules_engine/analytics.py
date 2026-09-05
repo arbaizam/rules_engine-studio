@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
+from rules_engine.dataframe_evaluation import _top_level_column
 from rules_engine.models import Ruleset
 from rules_engine.spark_runtime import SparkRulesEngineRuntime
 
@@ -60,6 +61,7 @@ class RulesetCoverageAnalyzer:
         self,
         runtime: SparkRulesEngineRuntime,
     ) -> None:
+        """Create an analyzer backed by the production Spark runtime."""
         self._runtime = runtime
 
     def analyze(
@@ -77,15 +79,15 @@ class RulesetCoverageAnalyzer:
             raise ValueError("column_prefix must be non-empty.")
         if any(column.startswith(f"{column_prefix}_") for column in df.columns):
             raise ValueError(f"Input contains reserved coverage columns beginning {column_prefix}_")
-        evaluated, _ = self._runtime._evaluate_attached_dataframe(
+        evaluated, _ = self._runtime.evaluate_attached_dataframe(
             df,
             ruleset,
             column_prefix=column_prefix,
             fail_on_error=False,
         )
-        matched_col = F.col(f"{column_prefix}_matched")
-        matched_ids_col = F.col(f"{column_prefix}_matched_rule_ids")
-        error_col = F.col(f"{column_prefix}_error")
+        matched_col = _top_level_column(f"{column_prefix}_matched")
+        matched_ids_col = _top_level_column(f"{column_prefix}_matched_rule_ids")
+        error_col = _top_level_column(f"{column_prefix}_error")
         clean_no_match = (~matched_col) & error_col.isNull()
         active_rules = tuple(
             sorted(

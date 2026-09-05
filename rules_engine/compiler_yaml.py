@@ -7,10 +7,7 @@ The compiler performs shape checks and enum parsing. Semantic checks remain in
 
 from __future__ import annotations
 
-import math
-import re
-from collections.abc import Mapping
-from datetime import date, datetime
+from collections.abc import Callable, Mapping
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -18,7 +15,7 @@ from typing import Any
 import yaml
 from yaml.constructor import ConstructorError
 
-from rules_engine.authoring import LITERAL_TYPE_HINTS
+from rules_engine.canonical_values import normalize_literal, normalize_mapping_keys
 from rules_engine.enums import ComparisonOperator, LogicalOperator
 from rules_engine.exceptions import CompilationError
 from rules_engine.models import (
@@ -33,15 +30,6 @@ from rules_engine.models import (
     Rule,
     Ruleset,
 )
-from rules_engine.standard_functions import to_timestamp, to_timestamp_ntz
-
-_LITERAL_TYPE_HINT_CANONICAL_NAMES = {
-    hint: canonical_name
-    for canonical_name, aliases in LITERAL_TYPE_HINTS
-    for hint in (canonical_name, *aliases)
-}
-_LONG_MIN = -(2**63)
-_LONG_MAX = 2**63 - 1
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -285,7 +273,7 @@ class YamlRulesetCompiler:
         if not isinstance(raw_items, list):
             raise CompilationError(f"Condition group {group_id} must contain a list.")
         explicit_group_id = payload.get("condition_group_id", group_id)
-        if not isinstance(explicit_group_id, str) or not explicit_group_id:
+        if not isinstance(explicit_group_id, str) or not explicit_group_id.strip():
             raise CompilationError("condition_group_id must be a non-empty string when provided.")
         return self._compile_condition_group(logical_operator, raw_items, explicit_group_id)
 
@@ -373,10 +361,10 @@ class YamlRulesetCompiler:
         documented shorthand where keys are target fields and values are
         literal or operand payloads.
         """
+        assignments: list[Assignment] = []
         if isinstance(payload, Mapping):
-            assignments: list[Assignment] = []
             for target_field, raw_value in payload.items():
-                if not isinstance(target_field, str) or not target_field:
+                if not isinstance(target_field, str) or not target_field.strip():
                     raise CompilationError("Assignment target fields must be non-empty strings.")
                 assignments.append(
                     Assignment(
@@ -388,7 +376,6 @@ class YamlRulesetCompiler:
             return tuple(assignments)
         if not isinstance(payload, list):
             raise CompilationError("assign must be a list or mapping.")
-        assignments: list[Assignment] = []
         for index, raw_assignment in enumerate(payload, start=1):
             assignment = self._ensure_mapping(raw_assignment, "assignment")
             self._reject_unsupported_keys(
@@ -476,10 +463,11 @@ class YamlRulesetCompiler:
             )
             return CustomFunctionOperand(
                 function_name=self._require_str(fn_payload, "name"),
-                args={
-                    str(arg_name): self._compile_custom_function_arg(arg_value)
-                    for arg_name, arg_value in self._optional_mapping(fn_payload, "args").items()
-                },
+                args=self._normalize_mapping_keys(
+                    self._optional_mapping(fn_payload, "args"),
+                    self._compile_custom_function_arg,
+                    "Custom function arguments",
+                ),
                 default_if_null=default_if_null,
             )
         raise CompilationError(f"Unsupported operand kind: {key}")
@@ -515,9 +503,11 @@ class YamlRulesetCompiler:
             }
             if operand_keys:
                 return self._compile_operand(value)
-            return {
-                str(key): self._compile_custom_function_arg(item) for key, item in value.items()
-            }
+            return self._normalize_mapping_keys(
+                value,
+                self._compile_custom_function_arg,
+                "Custom function argument mapping",
+            )
         if isinstance(value, list):
             return [self._compile_custom_function_arg(item) for item in value]
         if isinstance(value, tuple):
@@ -526,138 +516,12 @@ class YamlRulesetCompiler:
             return {self._compile_custom_function_arg(item) for item in value}
         return self._normalize_literal_value(value)
 
-    def _normalize_literal_value(
-        self,
-        value: Any,
-        value_type: str | None = None,
-    ) -> Any:
-        """Preserve YAML-authored fractional numbers as exact decimals.
-
-        PyYAML normally parses an unquoted fractional literal as ``float``.
-        Financial rules must not silently switch to binary floating-point, so
-        untyped floats are normalized recursively through their YAML text
-        representation. Explicit floating-point hints retain float semantics.
-        """
-        normalized_type = value_type.lower() if isinstance(value_type, str) else None
-        if isinstance(value, list):
-            return [self._normalize_literal_value(item, value_type) for item in value]
-        if isinstance(value, tuple):
-            return tuple(self._normalize_literal_value(item, value_type) for item in value)
-        if isinstance(value, set):
-            return {self._normalize_literal_value(item, value_type) for item in value}
-        if isinstance(value, Mapping):
-            return {
-                key: self._normalize_literal_value(item, value_type) for key, item in value.items()
-            }
-        if isinstance(value, float) and not math.isfinite(value):
-            raise CompilationError("Numeric literals must be finite.")
-        if isinstance(value, Decimal) and not value.is_finite():
-            raise CompilationError("Decimal literals must be finite.")
-        if normalized_type is not None:
-            return self._normalize_typed_literal(value, normalized_type)
-        if isinstance(value, float):
-            return Decimal(str(value))
-        return value
-
-    def _normalize_typed_literal(self, value: Any, normalized_type: str) -> Any:
-        """Normalize one non-collection literal according to its declared type."""
-        if value is None:
-            return None
-        canonical_type = _LITERAL_TYPE_HINT_CANONICAL_NAMES.get(
-            normalized_type,
-            normalized_type,
-        )
-        if canonical_type == "string":
-            return self._normalize_string_literal(value)
-        if canonical_type == "integer":
-            return self._normalize_integer_literal(value)
-        if canonical_type == "double":
-            return self._normalize_double_literal(value)
-        if canonical_type == "date":
-            if isinstance(value, datetime):
-                return value.date()
-            if isinstance(value, date):
-                return value
-            if isinstance(value, str):
-                text = value.strip()
-                try:
-                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) is None:
-                        raise ValueError("Expected ISO date format YYYY-MM-DD.")
-                    return date.fromisoformat(text)
-                except ValueError as exc:
-                    raise CompilationError(
-                        f"Date literal must use ISO YYYY-MM-DD format, found {value!r}."
-                    ) from exc
-            raise CompilationError(
-                f"Date literal must be a date or ISO YYYY-MM-DD string, found {value!r}."
-            )
-        if canonical_type in {"timestamp", "timestamp_ntz"}:
-            converter = to_timestamp if canonical_type == "timestamp" else to_timestamp_ntz
-            try:
-                return converter(value)
-            except (TypeError, ValueError) as exc:
-                representation = (
-                    "an ISO timestamp with a UTC offset"
-                    if canonical_type == "timestamp"
-                    else "an ISO timestamp without a UTC offset"
-                )
-                raise CompilationError(
-                    f"{canonical_type} literal must be a datetime or {representation}, "
-                    f"found {value!r}."
-                ) from exc
-        if canonical_type == "boolean":
-            if not isinstance(value, bool):
-                raise CompilationError(
-                    f"Boolean literal must be an actual boolean, found {value!r}."
-                )
-            return value
-        if canonical_type == "decimal":
-            try:
-                decimal_value = Decimal(str(value))
-            except (InvalidOperation, ValueError) as exc:
-                raise CompilationError(
-                    f"Decimal literal must be numeric, found {value!r}."
-                ) from exc
-            if not decimal_value.is_finite():
-                raise CompilationError("Decimal literals must be finite.")
-            return decimal_value
-        return value
-
-    def _normalize_string_literal(self, value: Any) -> str:
-        """Require one explicitly string-typed literal value."""
-        if not isinstance(value, str):
-            raise CompilationError(
-                f"String literal must be a string, found {value!r}."
-            )
-        return value
-
-    def _normalize_integer_literal(self, value: Any) -> int:
-        """Return one lossless signed 64-bit integer literal value."""
-        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-            raise CompilationError(
-                f"Integer literal must be numeric, found {value!r}."
-            )
-        converted = int(value)
-        if value != converted:
-            raise CompilationError(
-                f"Integer literal must not have a fractional component, found {value!r}."
-            )
-        if not _LONG_MIN <= converted <= _LONG_MAX:
-            raise CompilationError(
-                f"Integer literal must fit a signed 64-bit value, found {value!r}."
-            )
-        return converted
-
-    def _normalize_double_literal(self, value: Any) -> float:
-        """Return one finite explicitly floating-point literal value."""
-        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-            raise CompilationError(
-                f"Floating-point literal must be numeric, found {value!r}."
-            )
-        converted = float(value)
-        if not math.isfinite(converted):
-            raise CompilationError("Floating-point literals must be finite.")
-        return converted
+    def _normalize_literal_value(self, value: Any, value_type: str | None = None) -> Any:
+        """Normalize authored data through the canonical literal contract."""
+        try:
+            return normalize_literal(value, value_type)
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise CompilationError(str(exc)) from exc
 
     def _enum(self, enum_type: type, value: str, label: str) -> Any:
         """
@@ -707,12 +571,24 @@ class YamlRulesetCompiler:
             raise CompilationError(f"{label} must be a mapping.")
         return value
 
+    def _normalize_mapping_keys(
+        self,
+        value: Mapping[Any, Any],
+        normalize_value: Callable[[Any], Any],
+        label: str,
+    ) -> dict[str, Any]:
+        """Normalize persisted mapping keys without silently merging values."""
+        try:
+            return normalize_mapping_keys(value, normalize_value, label)
+        except ValueError as exc:
+            raise CompilationError(str(exc)) from exc
+
     def _require_str(self, payload: Mapping[str, Any], key: str) -> str:
         """
         Read a required non-empty string field from a mapping.
         """
         value = payload.get(key)
-        if not isinstance(value, str) or not value:
+        if not isinstance(value, str) or not value.strip():
             raise CompilationError(f"{key} must be a non-empty string.")
         return value
 
@@ -762,9 +638,8 @@ class YamlRulesetCompiler:
         """Reject keys outside one explicitly declared mapping contract."""
         unsupported_keys = set(payload) - allowed_keys
         if unsupported_keys:
-            raise CompilationError(
-                f"{label} contains unsupported keys: {sorted(unsupported_keys)}."
-            )
+            rendered_keys = ", ".join(sorted(repr(key) for key in unsupported_keys))
+            raise CompilationError(f"{label} contains unsupported keys: [{rendered_keys}].")
 
     def _optional_str(self, payload: Mapping[str, Any], key: str) -> str | None:
         """

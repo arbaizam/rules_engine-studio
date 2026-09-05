@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from pyspark.sql import types as T
 
 from rules_engine.spark_runtime import (
     ASSIGNMENT_RESULT_STRUCT,
@@ -24,10 +25,26 @@ SCOPES = ("Whole ruleset", "One rule", "One condition", "One assignment")
 
 def render() -> None:
     """Render focused and batch production-runtime tests for current data."""
+    errors = state.editor_errors()
+    if errors:
+        st.error("Fix invalid editor values before evaluating: " + "; ".join(errors.values()))
+        return
     rows = state.rows()
     if not rows:
         st.info("Upload or enter test data before running the ruleset.")
         return
+    try:
+        source_schema = engine.sample_schema(rows)
+    except (TypeError, ValueError) as exc:
+        st.error(f"Sample schema cannot be inferred: {exc}")
+        return
+    with st.expander("Sample Spark schema", expanded=False):
+        st.caption(
+            "All scopes use this schema inferred from the full sample dataset. "
+            "The production Spark validator checks source fields and assignment types. "
+            "Validate again against the actual table schema before deployment."
+        )
+        st.json(source_schema.jsonValue())
     detail = st.radio(
         "Result detail",
         ("Compact", "Full audit"),
@@ -40,12 +57,12 @@ def render() -> None:
         ),
     )
     full_audit = detail == "Full audit"
-    _single(rows, full_audit=full_audit)
+    _single(rows, full_audit=full_audit, source_schema=source_schema)
     st.divider()
-    _batch(rows, full_audit=full_audit)
+    _batch(rows, full_audit=full_audit, source_schema=source_schema)
 
 
-def _single(rows: list[dict[str, Any]], *, full_audit: bool) -> None:
+def _single(rows: list[dict[str, Any]], *, full_audit: bool, source_schema: T.StructType) -> None:
     """Run a selected authoring scope against one test row."""
     st.subheader("Inspect one row")
     picker = st.columns([2, 3])
@@ -62,18 +79,20 @@ def _single(rows: list[dict[str, Any]], *, full_audit: bool) -> None:
         st.json(_jsonable(row))
 
     if scope == "Whole ruleset":
-        _whole_ruleset(row, full_audit=full_audit)
+        _whole_ruleset(row, full_audit=full_audit, source_schema=source_schema)
     elif scope == "One rule":
-        _one_rule(row)
+        _one_rule(row, source_schema=source_schema)
     elif scope == "One condition":
-        _one_condition(row)
+        _one_condition(row, source_schema=source_schema)
     else:
-        _one_assignment(row)
+        _one_assignment(row, source_schema=source_schema)
 
 
-def _whole_ruleset(row: dict[str, Any], *, full_audit: bool) -> None:
+def _whole_ruleset(row: dict[str, Any], *, full_audit: bool, source_schema: T.StructType) -> None:
     """Render the stable business result from production row evaluation."""
-    result = engine.evaluate_row(state.draft(), row, full_audit=full_audit)
+    result = engine.evaluate_row(
+        state.draft(), row, full_audit=full_audit, source_schema=source_schema
+    )
     if result["error"]:
         st.error(f"Evaluation failed: {result['error']}")
         return
@@ -89,7 +108,7 @@ def _whole_ruleset(row: dict[str, Any], *, full_audit: bool) -> None:
         _full_audit(result)
 
 
-def _one_rule(row: dict[str, Any]) -> None:
+def _one_rule(row: dict[str, Any], *, source_schema: T.StructType) -> None:
     """Run one selected rule through the production condition runtime."""
     rules = state.draft().ordered_rules()
     if not rules:
@@ -102,7 +121,9 @@ def _one_rule(row: dict[str, Any]) -> None:
         key="eval_rule",
     )
     try:
-        outcome = engine.evaluate_rule(rule, row, ruleset=state.draft())
+        outcome = engine.evaluate_rule(
+            rule, row, ruleset=state.draft(), source_schema=source_schema
+        )
     except engine.FocusedEvaluationSkipped as exc:
         st.warning(str(exc))
         return
@@ -131,7 +152,7 @@ def _one_rule(row: dict[str, Any]) -> None:
         _plain_assignment_table(outcome["assign"])
 
 
-def _one_condition(row: dict[str, Any]) -> None:
+def _one_condition(row: dict[str, Any], *, source_schema: T.StructType) -> None:
     """Run one selected condition and expose its production trace values."""
     items = _all_conditions()
     if not items:
@@ -149,6 +170,7 @@ def _one_condition(row: dict[str, Any]) -> None:
             row,
             ruleset=state.draft(),
             owning_rule=rule,
+            source_schema=source_schema,
         )
     except engine.FocusedEvaluationSkipped as exc:
         st.warning(str(exc))
@@ -156,6 +178,13 @@ def _one_condition(row: dict[str, Any]) -> None:
     except engine.OperandError as exc:
         st.error(str(exc))
         return
+    if not result["active_flag"]:
+        st.warning(
+            "This condition is inactive. Its operands are not evaluated and it returns false."
+        )
+    st.caption(
+        "Condition inspection evaluates the selected condition within its prior-rule context."
+    )
     metrics = st.columns([1, 1, 1, 2])
     metrics[0].metric("Passed", "true" if result["matched"] else "false")
     metrics[1].markdown(f"**Left**<br>{value_badge(result['left_value'])}", unsafe_allow_html=True)
@@ -170,7 +199,7 @@ def _one_condition(row: dict[str, Any]) -> None:
         st.json(_jsonable(result))
 
 
-def _one_assignment(row: dict[str, Any]) -> None:
+def _one_assignment(row: dict[str, Any], *, source_schema: T.StructType) -> None:
     """Resolve one assignment operand with the production runtime."""
     items = _all_assignments()
     if not items:
@@ -188,6 +217,7 @@ def _one_assignment(row: dict[str, Any]) -> None:
             row,
             ruleset=state.draft(),
             owning_rule=rule,
+            source_schema=source_schema,
         )
     except engine.FocusedEvaluationSkipped as exc:
         st.warning(str(exc))
@@ -200,11 +230,18 @@ def _one_assignment(row: dict[str, Any]) -> None:
         st.json(_jsonable(resolution.trace or {}))
 
 
-def _batch(rows: list[dict[str, Any]], *, full_audit: bool) -> None:
+def _batch(rows: list[dict[str, Any]], *, full_audit: bool, source_schema: T.StructType) -> None:
     """Run the entire ruleset over every uploaded test row."""
     st.subheader("Run all test rows")
     prefix = st.session_state.get(state.PREFIX, "rules_engine")
-    results = engine.evaluate_rows(state.draft(), rows, full_audit=full_audit)
+    try:
+        _validate_output_prefix(rows, prefix)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    results = engine.evaluate_rows(
+        state.draft(), rows, full_audit=full_audit, source_schema=source_schema
+    )
     frame = _results_frame(rows, results, prefix, full_audit=full_audit)
     matched = sum(1 for result in results if result["matched"] and not result["error"])
     errors = sum(1 for result in results if result["error"])
@@ -230,6 +267,7 @@ def _results_frame(
     full_audit: bool,
 ) -> pd.DataFrame:
     """Combine input rows and stable production business results."""
+    _validate_output_prefix(rows, prefix)
     records: list[dict[str, Any]] = []
     for row, result in zip(rows, results, strict=True):
         record: dict[str, Any] = dict(row)
@@ -237,6 +275,19 @@ def _results_frame(
             record[f"{prefix}_{field_name}"] = _cell(result[field_name])
         records.append(record)
     return pd.DataFrame(records)
+
+
+def _validate_output_prefix(rows: list[dict[str, Any]], prefix: str) -> None:
+    """Reserve every canonical output name before combining results with source data."""
+    if not isinstance(prefix, str) or not prefix.strip():
+        raise ValueError("Output column prefix must be non-empty.")
+    reserved = {f"{prefix}_{name}".casefold() for name in engine.FULL_AUDIT_FIELDS}
+    conflicts = sorted({name for row in rows for name in row if name.casefold() in reserved})
+    if conflicts:
+        raise ValueError(
+            f"Input contains rules-engine output columns for prefix {prefix!r}: {conflicts}. "
+            "Choose another output prefix."
+        )
 
 
 def _assignment_result_table(assignments: dict[str, Any]) -> None:

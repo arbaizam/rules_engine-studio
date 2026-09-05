@@ -173,7 +173,7 @@ def test_condition_expressions_include_operator_options_and_active_status():
     )
 
     assert expressions.condition_expression(draft) == (
-        'Ignored because this condition is inactive: input field "CurrentFICO" '
+        'Evaluates as false because this condition is inactive: input field "CurrentFICO" '
         "is at least 620 (absolute tolerance 5); raise an error when an operand is null"
     )
     assert expressions.condition_expression(
@@ -208,12 +208,12 @@ def test_group_expressions_preserve_nested_all_any_structure():
             '  • input field "CurrentFICO" is at least 620',
             "  • Any of the following are true:",
             '    • input field "CurrentDSCR" is at least 1.2',
-            "    • Ignored because this condition is inactive: "
+            "    • Evaluates as false because this condition is inactive: "
             'input field "ManualReview" equals true',
         ]
     )
     assert expressions.group_expression(ConditionGroup()) == (
-        "Always matches because this group has no conditions."
+        "Invalid empty group: add a condition or nested group."
     )
 
 
@@ -253,7 +253,7 @@ def test_vendored_engine_targets_authoring_contract_commit():
     )
 
     assert "git+https://github.com/arbaizam/rules_engine" not in requirements
-    assert "667f80d5fa9e660687268d9752b53fbaced2e8f1" in provenance
+    assert "ad26d54a8b57fd359b3ff3c0b9addf87f9b43f3f" in provenance
     assert (project_root / "rules_engine" / "authoring.py").is_file()
     assert authoring.manifest()["manifest_version"] == 1
 
@@ -316,8 +316,8 @@ def test_literal_hints_aliases_operand_kinds_and_logic_come_from_manifest():
             assert normalize_literal_editor_type(alias, None) == contract["name"]
 
     restored = Operand.from_dict({"literal": 1.0, "value_type": "int"})
-    assert restored.value_type == "integer"
-    assert restored.to_dict() == {"literal": 1.0, "value_type": "integer"}
+    assert restored.value_type == "int"
+    assert restored.to_dict() == {"literal": 1.0, "value_type": "int"}
 
 
 def test_manifest_function_hint_vocabularies_and_dynamic_returns_are_consumed():
@@ -473,7 +473,13 @@ def test_demo_eligibility_rule_applies_fico_and_dscr_policy():
 
     result = engine.evaluate_row(
         sample_data.demo_ruleset(),
-        {"CurrentFICO": None, "OriginalFICO": None, "CurrentDSCR": 1.2},
+        {
+            **type_compatibility.normalized_records(sample_data.demo_frame())[0],
+            "CurrentFICO": None, "OriginalFICO": None, "CurrentDSCR": 1.2,
+        },
+        source_schema=engine.sample_schema(
+            type_compatibility.normalized_records(sample_data.demo_frame())
+        ),
     )
     assert result["matched_rule_ids"] == ["eligibility"]
     assert result["assign"]["ReviewStatus"] == {"applied": True, "value": "Ineligible"}
@@ -868,7 +874,7 @@ def test_operand_default_if_null_uses_production_runtime():
             [assignment("assignment:defaulted:flag", "flag", literal(True))],
         )
     )
-    result = engine.evaluate_row(draft, {})
+    result = engine.evaluate_row(draft, {"score": None})
     assert result["matched"] is True
     assert result["assign"]["flag"]["value"] is True
 
@@ -940,8 +946,8 @@ def test_decimal_tolerance_uses_production_comparison():
     assert engine.evaluate_row(draft, {"score": Decimal("1.02")})["matched"] is False
 
 
-def test_type_profiles_filter_string_comparisons_and_preserve_unknowns():
-    """Sample values should remove predictably incompatible authoring choices."""
+def test_type_profiles_allow_canonical_string_rendering_and_preserve_unknowns():
+    """String operators render every canonical runtime value as text."""
     profiles = type_compatibility.column_profiles(sample_data.demo_frame())
     string_profile = profiles["LoanNo"]
 
@@ -954,7 +960,7 @@ def test_type_profiles_filter_string_comparisons_and_preserve_unknowns():
         string_profile,
         OPERATOR_NAMES,
     )
-    assert "starts_with" not in type_compatibility.operator_options(
+    assert "starts_with" in type_compatibility.operator_options(
         profiles["EffectiveDate"],
         OPERATOR_NAMES,
     )
@@ -962,15 +968,15 @@ def test_type_profiles_filter_string_comparisons_and_preserve_unknowns():
     allowed = type_compatibility.right_types_for_condition("starts_with", string_profile)
     fields = type_compatibility.compatible_names(list(profiles), profiles, allowed)
     assert "LoanNo" in fields
-    assert "EffectiveDate" not in fields
-    assert "OriginalFICO" not in fields
+    assert "EffectiveDate" in fields
+    assert "OriginalFICO" in fields
     assert "CurrentFICO" in fields
 
 
 def test_nullable_integer_rows_reach_the_engine_as_python_ints(monkeypatch):
-    """Nulls must not widen integer-valued fields into float runtime values."""
+    """Declared nullable integer columns reach the runtime as Python ints."""
     session = {
-        state.SAMPLE: pd.DataFrame({"score": [None, 779]}),
+        state.SAMPLE: pd.DataFrame({"score": pd.Series([None, 779], dtype="Int64")}),
     }
     monkeypatch.setattr(st, "session_state", session)
     state.set_frame(session[state.SAMPLE])
@@ -1077,8 +1083,8 @@ def test_browser_autosave_round_trip_preserves_draft_rows_and_selection(monkeypa
     assert "ruleset_id: browser_recovery" in yaml_io.to_yaml(state.draft())
 
 
-def test_browser_restore_repairs_legacy_orders_and_hidden_condition_state(monkeypatch):
-    """Old browser snapshots must reopen in an immediately exportable ordering state."""
+def test_browser_restore_preserves_invalid_authored_values_for_validation(monkeypatch):
+    """Recovery must not silently rewrite rule ordering or condition semantics."""
     draft = sample_data.demo_ruleset()
     draft.rules[1].rule_order = draft.rules[0].rule_order
     stale = next(draft.rules[0].conditions.walk_conditions())
@@ -1097,9 +1103,11 @@ def test_browser_restore_repairs_legacy_orders_and_hidden_condition_state(monkey
     browser_state.restore_json(encoded)
 
     restored = state.draft()
-    assert len({rule.rule_order for rule in restored.rules}) == len(restored.rules)
-    restored_condition = next(restored.rules[0].conditions.walk_conditions())
-    assert restored_condition.tolerance_abs == Decimal(0)
+    assert len({rule.rule_order for rule in restored.rules}) == len(restored.rules) - 1
+    restored_rule = next(rule for rule in restored.rules if rule.rule_id == draft.rules[0].rule_id)
+    restored_condition = next(restored_rule.conditions.walk_conditions())
+    assert restored_condition.tolerance_abs == Decimal("0.5")
+    assert "RULE_ORDER_DUPLICATE" in {issue.check_name for issue in yaml_io.validate(restored)}
 
 
 def test_corrupt_browser_autosave_is_cleared_without_blocking_startup(monkeypatch):
@@ -1192,18 +1200,18 @@ def test_batch_evaluation_builds_shared_infrastructure_once(monkeypatch):
     rows = type_compatibility.normalized_records(sample_data.demo_frame())[:4]
     counts = {"compile": 0, "audit_context": 0}
     original_compile = engine.compile_ruleset
-    original_context = engine._full_audit_context
+    original_context = engine._evaluation_context
 
     def counted_compile(ruleset):
         counts["compile"] += 1
         return original_compile(ruleset)
 
-    def counted_context(ruleset, batch_rows, compacts):
+    def counted_context(ruleset, batch_rows, *, full_audit, source_schema):
         counts["audit_context"] += 1
-        return original_context(ruleset, batch_rows, compacts)
+        return original_context(ruleset, batch_rows, full_audit=full_audit, source_schema=source_schema)
 
     monkeypatch.setattr(engine, "compile_ruleset", counted_compile)
-    monkeypatch.setattr(engine, "_full_audit_context", counted_context)
+    monkeypatch.setattr(engine, "_evaluation_context", counted_context)
 
     results = engine.evaluate_rows(draft, rows, full_audit=True)
 
@@ -1236,7 +1244,7 @@ def test_row_errors_are_captured_without_inventing_results():
     assert result["error"]
     assert result["matched"] is False
     assert result["matched_rule_ids"] == []
-    assert result["assign"] == {}
+    assert result["assign"] == {"value": {"applied": False, "value": None}}
 
 
 def test_python_modules_use_rules_engine_style_module_docstrings():

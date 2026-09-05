@@ -9,7 +9,6 @@ than a persisted schema.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -30,15 +29,19 @@ INTEGER = "integer"
 NUMBER = "number"
 DATE = "date"
 TIMESTAMP = "timestamp"
+TIMESTAMP_NTZ = "timestamp_ntz"
 SEQUENCE = "sequence"
 MAPPING = "mapping"
 
 CONCRETE_TYPES = frozenset(
-    {STRING, BOOLEAN, INTEGER, NUMBER, DATE, TIMESTAMP, SEQUENCE, MAPPING}
+    {STRING, BOOLEAN, INTEGER, NUMBER, DATE, TIMESTAMP, TIMESTAMP_NTZ, SEQUENCE, MAPPING}
 )
 NUMERIC_TYPES = frozenset({INTEGER, NUMBER})
-TEMPORAL_TYPES = frozenset({DATE, TIMESTAMP})
-SCALAR_TYPES = frozenset({STRING, BOOLEAN, INTEGER, NUMBER, DATE, TIMESTAMP})
+TEMPORAL_TYPES = frozenset({DATE, TIMESTAMP, TIMESTAMP_NTZ})
+SCALAR_TYPES = frozenset({STRING, BOOLEAN, INTEGER, NUMBER}) | TEMPORAL_TYPES
+SEQUENCE_HINTS = frozenset(
+    {"sequence", "ordered_sequence", "string_sequence", "integer_sequence", "date_sequence"}
+)
 
 _NULL_OPERATORS = frozenset({"is_null", "is_not_null"})
 _STRING_OPERATORS = frozenset(
@@ -97,7 +100,6 @@ def column_profiles(frame: pd.DataFrame) -> dict[str, ValueProfile]:
 
 def normalized_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     """Return Python rows without pandas nulls or nullable-integer widening."""
-    profiles = column_profiles(frame)
     records: list[dict[str, Any]] = []
     for authored in frame.to_dict("records"):
         row: dict[str, Any] = {}
@@ -107,46 +109,22 @@ def normalized_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 row[name] = None
                 continue
             scalar = _python_scalar(value)
-            if (
-                profiles.get(name, ValueProfile()).kind == INTEGER
-                and isinstance(scalar, Real)
-                and not isinstance(scalar, bool)
-                and math.isfinite(float(scalar))
-                and float(scalar).is_integer()
-            ):
-                scalar = int(scalar)
             row[name] = scalar
         records.append(row)
     return records
 
 
 def operator_options(profile: ValueProfile, names: Sequence[str]) -> list[str]:
-    """Filter comparison operators using the selected left operand type."""
-    if profile.kind in {UNKNOWN, MIXED}:
-        return list(names)
-    common = _EQUALITY_OPERATORS | _NULL_OPERATORS
-    allowed = set(common)
-    if profile.kind == STRING:
-        allowed.update(_STRING_OPERATORS | _MEMBERSHIP_OPERATORS)
-    elif profile.kind in NUMERIC_TYPES | TEMPORAL_TYPES:
-        allowed.update(_ORDERED_OPERATORS | _RANGE_OPERATORS | _MEMBERSHIP_OPERATORS)
-    elif profile.kind == BOOLEAN:
-        allowed.update(_MEMBERSHIP_OPERATORS)
-    elif profile.kind == SEQUENCE:
-        allowed.update({"contains", "not_contains"})
-    return [name for name in names if name in allowed]
+    """Exclude only combinations that cannot execute in the canonical runtime."""
+    if profile.kind in {BOOLEAN, MAPPING, SEQUENCE}:
+        return [name for name in names if name not in _ORDERED_OPERATORS | _RANGE_OPERATORS]
+    return list(names)
 
 
 def left_types_for_operator(operator: str) -> frozenset[str] | None:
     """Return compatible left-side types for one comparison operator."""
-    if operator in _STRING_OPERATORS:
-        if operator in {"contains", "not_contains"}:
-            return frozenset({STRING, SEQUENCE})
-        return frozenset({STRING})
     if operator in _ORDERED_OPERATORS | _RANGE_OPERATORS:
-        return NUMERIC_TYPES | TEMPORAL_TYPES
-    if operator in _MEMBERSHIP_OPERATORS:
-        return SCALAR_TYPES
+        return NUMERIC_TYPES | TEMPORAL_TYPES | {STRING}
     return None
 
 
@@ -157,16 +135,14 @@ def right_types_for_condition(
     """Return compatible right-side types for a condition selection."""
     if operator in _NULL_OPERATORS:
         return frozenset()
-    if operator in {"starts_with", "ends_with", "like", "not_like"}:
-        return frozenset({STRING})
-    if operator in {"contains", "not_contains"}:
-        return frozenset({STRING}) if left_profile.kind == STRING else SCALAR_TYPES
+    if operator in _STRING_OPERATORS:
+        return None
     if operator in _RANGE_OPERATORS | _MEMBERSHIP_OPERATORS:
         return frozenset({SEQUENCE})
-    if left_profile.kind in NUMERIC_TYPES:
-        return NUMERIC_TYPES
-    if left_profile.kind in CONCRETE_TYPES:
+    if left_profile.kind in TEMPORAL_TYPES:
         return frozenset({left_profile.kind})
+    if operator in _ORDERED_OPERATORS:
+        return NUMERIC_TYPES | {STRING} if left_profile.kind in NUMERIC_TYPES | {STRING} else None
     return None
 
 
@@ -220,8 +196,10 @@ def allowed_types_for_hint(type_hint: str) -> frozenset[str] | None:
         return None
     if normalized == "number":
         return NUMERIC_TYPES
-    if normalized in {"sequence", "string_sequence", "integer_sequence", "date_sequence"}:
+    if normalized in SEQUENCE_HINTS:
         return frozenset({SEQUENCE})
+    if normalized == "timestamp":
+        return frozenset({TIMESTAMP, TIMESTAMP_NTZ})
     if normalized == "mapping":
         return frozenset({MAPPING})
     profile = profile_for_literal_type(normalized)
@@ -266,9 +244,10 @@ def profile_for_operand(
         profile = _function_profile(operand, columns, assigned_profiles)
     else:
         profile = ValueProfile()
-    if profile.kind == UNKNOWN and operand.default_if_null is not None:
+    if operand.default_if_null is not None:
         fallback = profile_for_operand(operand.default_if_null, columns, assigned_profiles)
-        return ValueProfile(fallback.kind, nullable=False)
+        effective = fallback if profile.kind == UNKNOWN else combine_profiles(profile, fallback)
+        return ValueProfile(effective.kind, nullable=fallback.nullable)
     return profile
 
 
@@ -283,14 +262,19 @@ def assignment_profiles(
     for rule in ruleset.ordered_rules():
         if before_rule is not None and rule.uid == before_rule.uid:
             break
+        if not rule.active_flag:
+            continue
+        pending: dict[str, ValueProfile] = {}
         for assignment in rule.assignments:
             if not assignment.target_field:
                 continue
             proposed = profile_for_operand(assignment.value, columns, profiles)
             existing = profiles.get(assignment.target_field)
-            profiles[assignment.target_field] = (
+            pending[assignment.target_field] = (
                 proposed if existing is None else combine_profiles(existing, proposed)
             )
+        # All assignments in a rule resolve against the same prior-rule snapshot.
+        profiles.update(pending)
     return profiles
 
 
@@ -303,6 +287,10 @@ def combine_profiles(*profiles: ValueProfile) -> ValueProfile:
 
 def profile_for_literal_type(type_hint: str | None, value: Any = None) -> ValueProfile:
     """Map a canonical/alias literal hint or concrete value to a semantic type."""
+    if isinstance(value, Mapping):
+        return ValueProfile(MAPPING)
+    if isinstance(value, (list, tuple, set)):
+        return ValueProfile(SEQUENCE)
     normalized = (type_hint or "").lower()
     mapping = {
         "str": STRING,
@@ -318,7 +306,7 @@ def profile_for_literal_type(type_hint: str | None, value: Any = None) -> ValueP
         "number": NUMBER,
         "date": DATE,
         "timestamp": TIMESTAMP,
-        "timestamp_ntz": TIMESTAMP,
+        "timestamp_ntz": TIMESTAMP_NTZ,
         "array": SEQUENCE,
         "list": SEQUENCE,
         "sequence": SEQUENCE,
@@ -351,8 +339,19 @@ def _function_profile(
     argument = operand.args.get(argument_name)
     if mode == "same_as":
         return _argument_profile(argument, columns, assigned)
-    if mode == "common_type" and isinstance(argument, (list, tuple, set)):
-        profiles = [_argument_profile(item, columns, assigned) for item in argument]
+    if mode == "common_type":
+        if isinstance(argument, Operand) and argument.kind == "literal":
+            values = argument.value
+            if not isinstance(values, (list, tuple, set)):
+                return ValueProfile()
+            hint = argument.value_type
+            if hint in {"array", "list", "struct"}:
+                hint = None
+            profiles = [profile_for_literal_type(hint, item) for item in values]
+        elif isinstance(argument, (list, tuple, set)):
+            profiles = [_argument_profile(item, columns, assigned) for item in argument]
+        else:
+            return ValueProfile()
         return combine_profiles(*profiles) if profiles else ValueProfile()
     return ValueProfile()
 
@@ -392,10 +391,9 @@ def _value_kind(value: Any) -> str:
     if isinstance(value, Decimal):
         return NUMBER
     if isinstance(value, Real):
-        numeric = float(value)
-        return INTEGER if math.isfinite(numeric) and numeric.is_integer() else NUMBER
+        return NUMBER
     if isinstance(value, datetime):
-        return TIMESTAMP
+        return TIMESTAMP if value.tzinfo is not None and value.utcoffset() is not None else TIMESTAMP_NTZ
     if isinstance(value, date):
         return DATE
     if isinstance(value, str):

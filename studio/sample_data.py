@@ -7,8 +7,12 @@ author sees is a working example rather than an empty form.
 
 from __future__ import annotations
 
+import csv
 import io
 import json
+import re
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
@@ -248,7 +252,7 @@ DEMO_ROWS: list[dict[str, Any]] = [
 
 def demo_frame() -> pd.DataFrame:
     """Return the editable starter rows as a pandas DataFrame."""
-    return normalize_frame(pd.DataFrame(DEMO_ROWS))
+    return normalize_frame(pd.DataFrame(DEMO_ROWS, dtype=object))
 
 
 def _field(name: str) -> Operand:
@@ -376,8 +380,7 @@ def demo_ruleset() -> Ruleset:
                 value=_lit(
                     {
                         "status": "eligible",
-                        "basis": "CurrentDSCR",
-                        "threshold": 1.25,
+                        "policy": "CurrentDSCR >= 1.25",
                     },
                     "struct",
                 ),
@@ -543,28 +546,54 @@ def read_uploaded(name: str, data: bytes) -> pd.DataFrame:
         Parsed test rows.
     """
     lowered = name.lower()
-    if lowered.endswith(".csv"):
-        return normalize_frame(pd.read_csv(io.BytesIO(data)))
-    if lowered.endswith(".tsv"):
-        return normalize_frame(pd.read_csv(io.BytesIO(data), sep="\t"))
+    if lowered.endswith((".csv", ".tsv")):
+        separator = "\t" if lowered.endswith(".tsv") else ","
+        text = data.decode("utf-8-sig")
+        header = next(csv.reader(io.StringIO(text), delimiter=separator), [])
+        if not header or any(not name.strip() for name in header):
+            raise ValueError("Sample columns must have non-empty names.")
+        if len(header) != len(set(header)):
+            raise ValueError("Sample column names must be unique.")
+        return normalize_frame(
+            pd.read_csv(
+                io.StringIO(text), sep=separator, float_precision="round_trip",
+                dtype_backend="numpy_nullable",
+            )
+        )
     if lowered.endswith(".json"):
-        return normalize_frame(pd.DataFrame(json.loads(data.decode("utf-8"))))
+        return read_pasted_json(data.decode("utf-8-sig"))
     if lowered.endswith(".parquet"):
         return normalize_frame(pd.read_parquet(io.BytesIO(data)))
     raise ValueError("Supported sample data formats: .csv, .tsv, .json, .parquet")
 
 
 def _parse_date_columns(frame: pd.DataFrame) -> pd.DataFrame:
-    """Parse CSV-like columns containing ``date`` into Python date values."""
+    """Infer date-only columns without discarding invalid text or timestamp information."""
     parsed_frame = frame.copy()
     for column_name in parsed_frame.columns:
         if "date" not in str(column_name).lower():
+            continue
+        populated = parsed_frame[column_name].dropna()
+        if populated.empty or any(isinstance(value, datetime) for value in populated):
+            continue
+        # CSV date inference is advisory. Leave an entire column untouched if
+        # a value is not a date-only string; never turn bad data into a null.
+        if not all(
+            isinstance(value, date)
+            or (
+                isinstance(value, str)
+                and re.fullmatch(r"(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{4})", value)
+            )
+            for value in populated
+        ):
             continue
         parsed = pd.to_datetime(
             parsed_frame[column_name],
             errors="coerce",
             format="mixed",
         )
+        if parsed.loc[populated.index].isna().any():
+            continue
         values = parsed.dt.date.astype("object")
         parsed_frame[column_name] = values.where(parsed.notna(), None)
     return parsed_frame
@@ -572,12 +601,45 @@ def _parse_date_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """Normalize date columns and retain nullable integer types without widening."""
-    return _parse_date_columns(frame).convert_dtypes()
+    if any(not isinstance(name, str) or not name.strip() for name in frame.columns):
+        raise ValueError("Sample columns must have non-empty string names.")
+    if not frame.columns.is_unique:
+        raise ValueError("Sample column names must be unique.")
+    normalized = _parse_date_columns(frame)
+    for name in normalized.columns:
+        populated = normalized[name].dropna()
+        if not populated.empty and all(type(value) is int for value in populated):
+            if all(-(2**63) <= value < 2**63 for value in populated):
+                normalized[name] = pd.array(normalized[name], dtype="Int64")
+            # Oversize integers must remain exact so schema validation can
+            # report overflow, rather than evaluating a rounded sample value.
+            continue
+        normalized[name] = normalized[name].convert_dtypes(convert_integer=False)
+    return normalized
 
 
 def read_pasted_json(text: str) -> pd.DataFrame:
     """Parse pasted JSON object or array data into editable test rows."""
-    parsed = json.loads(text)
+    parsed = json.loads(
+        text, parse_float=Decimal, parse_constant=_reject_json_constant,
+        object_pairs_hook=_unique_json_object,
+    )
     if isinstance(parsed, dict):
         parsed = [parsed]
-    return normalize_frame(pd.DataFrame(parsed))
+    if not isinstance(parsed, list) or any(not isinstance(row, dict) for row in parsed):
+        raise ValueError("Sample JSON must be an object or an array of row objects.")
+    # Object dtype avoids pandas widening nullable integers through binary floats.
+    return normalize_frame(pd.DataFrame(parsed, dtype=object))
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"Sample JSON numbers must be finite: {value}")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError(f"Duplicate sample JSON key: {name}")
+        result[name] = value
+    return result

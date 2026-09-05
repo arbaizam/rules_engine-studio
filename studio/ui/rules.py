@@ -11,6 +11,7 @@ import streamlit as st
 
 from .. import engine, expressions, state, type_compatibility
 from ..schema import (
+    LOGIC_MODES,
     OPERATOR_NAMES,
     OPERATORS_BY_NAME,
     TOLERANCE_OPERATORS,
@@ -21,7 +22,7 @@ from ..schema import (
     Rule,
     new_condition,
 )
-from .widgets import index_of, operand_editor, value_badge
+from .widgets import editor_error, editor_pass, index_of, operand_editor, value_badge
 
 
 def render() -> None:
@@ -40,7 +41,7 @@ def render() -> None:
         column_profiles,
         before_rule=rule,
     )
-    with st.container(key=f"rule_node_{rule.uid}"):
+    with editor_pass(rule.uid), st.container(key=f"rule_node_{rule.uid}"):
         st.markdown(
             '<div class="studio-node-label studio-rule-label">Rule</div>',
             unsafe_allow_html=True,
@@ -143,8 +144,8 @@ def _group(
         head = st.columns([2.2, 3.3, 1.4, 1.7, 1.7])
         group.logical_operator = head[0].selectbox(
             "Match",
-            ["all", "any"],
-            index=0 if group.logical_operator == "all" else 1,
+            list(dict.fromkeys([*LOGIC_MODES, group.logical_operator])),
+            index=index_of(LOGIC_MODES, group.logical_operator, len(LOGIC_MODES)),
             format_func=lambda v: "Match all of" if v == "all" else "Match any of",
             key=f"glogic-{group.uid}",
             label_visibility="collapsed",
@@ -158,14 +159,14 @@ def _group(
         if head[2].button("Add test", key=f"gaddc-{group.uid}"):
             default = columns[0] if columns else ""
             state.queue(lambda g=group, d=default: g.children.append(new_condition(d)))
-        if head[3].button("Add group", key=f"gaddg-{group.uid}", disabled=depth >= 3):
+        if head[3].button("Add group", key=f"gaddg-{group.uid}"):
             state.queue(lambda g=group: g.children.append(ConditionGroup(children=[])))
         if parent is not None and head[4].button("Remove group", key=f"gdel-{group.uid}"):
             state.queue(lambda p=parent, g=group: p.children.remove(g))
 
         group_expression_slot = st.empty()
         if not group.children:
-            st.caption("Empty group — matches every row.")
+            st.warning("Add at least one condition or nested group; empty groups are invalid.")
 
         direct_conditions = [
             child for child in group.children if not isinstance(child, ConditionGroup)
@@ -205,10 +206,15 @@ def _condition(
     assigned_profiles: dict[str, type_compatibility.ValueProfile],
 ) -> None:
     """Render one canonical condition with operand-level null behavior."""
+    previous_operator = condition.operator
     _normalize_condition_controls(
         condition,
         st.session_state.get(f"cop-{condition.uid}", condition.operator),
     )
+    if condition.operator != previous_operator:
+        editor_error(f"ctolerance-{condition.uid}", None)
+        st.session_state[f"cerrornull-{condition.uid}"] = condition.error_on_null
+        st.session_state[f"ctolerance-{condition.uid}"] = str(condition.tolerance_abs)
     assigned_names = list(assigned_profiles)
     with st.container(border=True, key=f"condition_{condition.uid}"):
         st.markdown('<div class="studio-node-label">Condition</div>', unsafe_allow_html=True)
@@ -226,7 +232,7 @@ def _condition(
             "Error on null",
             value=condition.error_on_null,
             key=f"cerrornull-{condition.uid}",
-            disabled=condition.operator in {"is_null", "is_not_null"},
+            disabled=condition.operator in {"is_null", "is_not_null"} and not condition.error_on_null,
         )
 
         cols = st.columns([3, 2, 3])
@@ -258,7 +264,7 @@ def _condition(
             )
             if condition.operator not in operator_options:
                 operator_options.append(condition.operator)
-            condition.operator = st.selectbox(
+            selected_operator = st.selectbox(
                 "Test",
                 operator_options,
                 index=index_of(operator_options, condition.operator),
@@ -269,13 +275,15 @@ def _condition(
                 ),
                 key=f"cop-{condition.uid}",
             )
-            _normalize_condition_controls(condition, condition.operator)
-            if condition.operator in TOLERANCE_OPERATORS:
+            _normalize_condition_controls(condition, selected_operator)
+            if condition.operator in TOLERANCE_OPERATORS or condition.tolerance_abs != 0:
                 tolerance_row = st.columns([1, 1], gap="small", vertical_alignment="center")
                 with tolerance_row[0]:
                     tolerance = st.text_input(
                         "Tolerance",
-                        value=str(condition.tolerance_abs),
+                        value=st.session_state.get("studio_editor_raw", {}).get(
+                            f"ctolerance-{condition.uid}", str(condition.tolerance_abs)
+                        ),
                         key=f"ctolerance-{condition.uid}",
                         help="Absolute numeric tolerance applied by this comparison.",
                         label_visibility="collapsed",
@@ -287,17 +295,26 @@ def _condition(
                     )
                 try:
                     parsed_tolerance = Decimal(tolerance)
-                    if not parsed_tolerance.is_finite():
+                    if not parsed_tolerance.is_finite() or parsed_tolerance < 0:
                         raise InvalidOperation
                     condition.tolerance_abs = parsed_tolerance
+                    editor_error(f"ctolerance-{condition.uid}", None)
                 except (InvalidOperation, ValueError):
-                    st.error("Tolerance must be a finite decimal.")
+                    editor_error(
+                        f"ctolerance-{condition.uid}",
+                        "Tolerance must be a finite nonnegative decimal.", raw=tolerance,
+                    )
 
         spec = OPERATORS_BY_NAME.get(condition.operator)
         with cols[2]:
             if spec is not None and spec.arity == 1:
                 st.markdown("&nbsp;", unsafe_allow_html=True)
                 st.caption("No value needed.")
+                if condition.right is not None:
+                    st.error("This unary comparison has an unexpected right operand.")
+                    if st.button("Remove right operand", key=f"cr-remove-{condition.uid}"):
+                        condition.right = None
+                        st.rerun()
             else:
                 if condition.right is None:
                     condition.right = Operand()
@@ -333,11 +350,13 @@ def _condition(
 
 
 def _normalize_condition_controls(condition: Condition, operator: Any) -> None:
-    """Clear state that the selected comparison operator cannot consume."""
-    if operator in OPERATORS_BY_NAME:
-        condition.operator = str(operator)
+    """Clear incompatible controls only after an explicit operator change."""
+    if operator not in OPERATORS_BY_NAME or operator == condition.operator:
+        return
+    condition.operator = str(operator)
     if condition.operator in {"is_null", "is_not_null"}:
         condition.error_on_null = False
+        condition.right = None
     if condition.operator not in TOLERANCE_OPERATORS:
         condition.tolerance_abs = Decimal(0)
 
@@ -348,7 +367,8 @@ def _operator_option_label(
     left_profile: type_compatibility.ValueProfile,
 ) -> str:
     """Flag an imported operator that conflicts with the selected left value."""
-    label = OPERATORS_BY_NAME[name].label
+    spec = OPERATORS_BY_NAME.get(name)
+    label = spec.label if spec is not None else f"{name} · unrecognized"
     compatible = type_compatibility.operator_options(left_profile, OPERATOR_NAMES)
     if name == current and name not in compatible:
         label += " · incompatible"
@@ -492,6 +512,9 @@ def _override_note(rule: Rule) -> None:
 def _try_it(rule: Rule) -> None:
     """Run the selected rule against one test row with production semantics."""
     st.subheader("Try this rule")
+    if state.editor_errors():
+        st.warning("Correct the invalid editor inputs before evaluating this rule.")
+        return
     rows = state.rows()
     if not rows:
         st.caption("Add sample data to test this rule.")
@@ -504,11 +527,16 @@ def _try_it(rule: Rule) -> None:
     row = rows[picked]
 
     try:
-        outcome = engine.evaluate_rule(rule, row, ruleset=state.draft())
+        outcome = engine.evaluate_rule(
+            rule, row, ruleset=state.draft(), source_schema=engine.sample_schema(rows)
+        )
     except engine.FocusedEvaluationSkipped as exc:
         st.warning(str(exc))
         return
     except engine.OperandError as exc:
+        st.error(str(exc))
+        return
+    except (TypeError, ValueError) as exc:
         st.error(str(exc))
         return
 

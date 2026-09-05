@@ -1,5 +1,5 @@
 # Databricks Apps entrypoint. Not wired up yet -- kept here so deployment is a
-# config step rather than a rewrite. See README "Running on Databricks".
+# config step rather than a rewrite. See README "Hosting".
 command:
   - streamlit
   - run

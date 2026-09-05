@@ -23,7 +23,7 @@ def render() -> None:
         state.frame(),
         num_rows="dynamic",
         width="stretch",
-        key="sample_editor",
+        key=f"sample_editor_{st.session_state.get('sample_editor_revision', 0)}",
     )
     if isinstance(edited, pd.DataFrame):
         state.set_frame(edited)
@@ -45,7 +45,7 @@ def render() -> None:
             except (ImportError, OSError, UnicodeError, ValueError) as exc:
                 st.error(f"Could not read {upload.name}: {exc}")
             else:
-                state.set_frame(frame)
+                _replace_frame(frame)
                 st.rerun()
 
     with cols[1]:
@@ -63,17 +63,25 @@ def render() -> None:
             except (UnicodeError, ValueError) as exc:
                 st.error(f"Could not read that JSON: {exc}")
             else:
-                state.set_frame(frame)
+                _replace_frame(frame)
                 st.rerun()
 
     with cols[2]:
         st.markdown("**Start over**")
         if st.button("Restore demo rows", key="do_demo"):
-            state.set_frame(sample_data.demo_frame())
+            _replace_frame(sample_data.demo_frame())
             st.rerun()
 
     st.caption(
         "Sample data stays in this browser session. Nothing is written back to a table."
+    )
+
+
+def _replace_frame(frame: pd.DataFrame) -> None:
+    """Replace sample input without replaying edits queued for the previous table."""
+    state.set_frame(frame)
+    st.session_state["sample_editor_revision"] = (
+        st.session_state.get("sample_editor_revision", 0) + 1
     )
 
 

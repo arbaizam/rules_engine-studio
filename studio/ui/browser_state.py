@@ -4,26 +4,25 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
-from datetime import date, datetime, time
-from decimal import Decimal
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from rules_engine.canonical_values import canonical_json_value, decode_json_types
+
 from .. import state
 from ..schema import Ruleset
 
-_SCHEMA_VERSION = 1
-_STORAGE_KEY = "rules-engine-studio:working-draft:v1"
+_SCHEMA_VERSION = 2
+_STORAGE_KEY = "rules-engine-studio:working-draft:v2"
 _COMPONENT_KEY = "browser_autosave_bridge"
 _CHECKED = "_browser_autosave_checked"
 _NOTICE = "_browser_autosave_notice"
 _CLEAR = "_browser_autosave_clear"
 _RESTORE_PENDING = "_browser_autosave_restore_pending"
 _MAX_PAYLOAD_BYTES = 4_000_000
-_TYPE_KEY = "__studio_type__"
 
 _BRIDGE_DEFINITION = {
     "name": "studio_browser_autosave",
@@ -66,7 +65,7 @@ _BRIDGE_DEFINITION = {
                     if (payload && window.localStorage.getItem(storageKey) !== payload) {
                         window.localStorage.setItem(storageKey, payload);
                     }
-                    status.textContent = "Autosaved in this browser";
+                    status.textContent = payload ? "Autosaved in this browser" : "Autosave paused";
                 }
             } catch (error) {
                 status.textContent = "Browser autosave is unavailable";
@@ -94,64 +93,42 @@ def _bridge_component():
 
 
 def _pack(value: Any) -> Any:
-    """Convert authored values and dataframe scalars into strict JSON data."""
-    if value is None or isinstance(value, (bool, int, str)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Decimal):
-        return {_TYPE_KEY: "decimal", "value": format(value, "f")}
-    if isinstance(value, datetime):
-        return {_TYPE_KEY: "datetime", "value": value.isoformat()}
-    if isinstance(value, date):
-        return {_TYPE_KEY: "date", "value": value.isoformat()}
-    if isinstance(value, time):
-        return {_TYPE_KEY: "time", "value": value.isoformat()}
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        return _pack(to_dict())
+    """Use the engine's collision-safe, lossless literal persistence contract."""
+    return canonical_json_value(value)
+
+
+def _sample_scalars(value: Any) -> Any:
+    """Remove dataframe missing sentinels without changing authored literal types."""
+    if value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
     if isinstance(value, Mapping):
-        return {str(key): _pack(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_pack(item) for item in value]
+        return {key: _sample_scalars(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sample_scalars(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sample_scalars(item) for item in value)
     if isinstance(value, set):
-        return [_pack(item) for item in sorted(value, key=str)]
+        return {_sample_scalars(item) for item in value}
     to_list = getattr(value, "tolist", None)
     if callable(to_list):
-        return _pack(to_list())
+        return _sample_scalars(to_list())
     scalar = getattr(value, "item", None)
     if callable(scalar):
-        try:
-            return _pack(scalar())
-        except (TypeError, ValueError):
-            return str(value)
-    try:
-        return None if bool(pd.isna(value)) else str(value)
-    except (TypeError, ValueError):
-        return str(value)
+        return _sample_scalars(scalar())
+    return value
 
 
 def _unpack(value: Any) -> Any:
     """Restore tagged authored values from strict JSON data."""
-    if isinstance(value, list):
-        return [_unpack(item) for item in value]
-    if not isinstance(value, Mapping):
-        return value
-    tag = value.get(_TYPE_KEY) if set(value) == {_TYPE_KEY, "value"} else None
-    raw = value.get("value")
-    if tag == "decimal" and isinstance(raw, str):
-        return Decimal(raw)
-    if tag == "datetime" and isinstance(raw, str):
-        return datetime.fromisoformat(raw)
-    if tag == "date" and isinstance(raw, str):
-        return date.fromisoformat(raw)
-    if tag == "time" and isinstance(raw, str):
-        return time.fromisoformat(raw)
-    return {str(key): _unpack(item) for key, item in value.items()}
+    return decode_json_types(value)
 
 
 def snapshot_json() -> str:
     """Serialize the current incomplete draft and test rows for local recovery."""
+    if state.editor_errors():
+        raise ValueError("Browser autosave is paused while an editor value is invalid.")
     frame = state.frame()
     selected = state.selected_rule()
     payload = {
@@ -159,10 +136,13 @@ def snapshot_json() -> str:
         "ruleset": _pack(state.draft().to_dict()),
         "sample": {
             "columns": [str(column) for column in frame.columns],
-            "rows": _pack(frame.to_dict("records")),
+            "rows": _pack(_sample_scalars(frame.to_dict("records"))),
         },
         "column_prefix": str(st.session_state.get(state.PREFIX, "rules_engine")),
-        "selected_rule_id": selected.rule_id if selected is not None else None,
+        "selected_rule_index": next(
+            (index for index, rule in enumerate(state.draft().ordered_rules()) if rule is selected),
+            None,
+        ),
     }
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     if len(encoded.encode("utf-8")) > _MAX_PAYLOAD_BYTES:
@@ -185,18 +165,36 @@ def restore_json(encoded: str) -> None:
         raise ValueError("Browser autosave is incomplete.")
     rows = _unpack(sample_payload.get("rows", []))
     columns = sample_payload.get("columns", [])
-    if not isinstance(rows, list) or not isinstance(columns, list):
+    if (
+        not isinstance(rows, list)
+        or not all(isinstance(row, Mapping) for row in rows)
+        or not isinstance(columns, list)
+        or not all(isinstance(column, str) for column in columns)
+        or len(set(columns)) != len(columns)
+        or any(set(row) != set(columns) for row in rows)
+    ):
         raise ValueError("Browser autosave sample data is invalid.")
 
     restored = Ruleset.from_dict(ruleset_payload)
+    restored_frame = pd.DataFrame(rows, columns=columns, dtype=object)
+    prefix = payload.get("column_prefix", "rules_engine")
+    if not isinstance(prefix, str):
+        raise ValueError("Browser autosave column prefix must be a string.")
+    selected_index = payload.get("selected_rule_index")
+    if selected_index is not None and (
+        type(selected_index) is not int or not 0 <= selected_index < len(restored.rules)
+    ):
+        raise ValueError("Browser autosave selection is invalid.")
+
+    # Prepare every fallible conversion before replacing the current draft.
+    state.set_frame(restored_frame)
     state.set_draft(restored)
-    state.set_frame(pd.DataFrame(rows, columns=[str(column) for column in columns]))
-    st.session_state.pop("sample_editor", None)
-    st.session_state[state.PREFIX] = str(payload.get("column_prefix") or "rules_engine")
-    selected_rule_id = payload.get("selected_rule_id")
-    selected = next((rule for rule in restored.rules if rule.rule_id == selected_rule_id), None)
-    if selected is not None:
-        state.select_rule(selected.uid)
+    st.session_state["sample_editor_revision"] = (
+        st.session_state.get("sample_editor_revision", 0) + 1
+    )
+    st.session_state[state.PREFIX] = prefix
+    if selected_index is not None:
+        state.select_rule(restored.rules[selected_index].uid)
 
 
 def _restore_from_component() -> None:
@@ -218,9 +216,7 @@ def _restore_from_component() -> None:
             restore_json(str(encoded))
         except Exception:  # noqa: BLE001 - corrupt browser data must never block startup
             st.session_state[_CLEAR] = True
-            st.session_state[_NOTICE] = (
-                "Browser autosave could not be recovered; using demo data."
-            )
+            st.session_state[_NOTICE] = "Browser autosave could not be recovered; using demo data."
         else:
             st.session_state[_NOTICE] = "Recovered your browser-autosaved project."
         finally:
@@ -240,15 +236,7 @@ def render() -> None:
             payload = snapshot_json()
         except ValueError as exc:
             st.caption(str(exc))
-    mode = (
-        "clear"
-        if clear
-        else "hold"
-        if restore_pending
-        else "save"
-        if checked
-        else "restore"
-    )
+    mode = "clear" if clear else "hold" if restore_pending else "save" if checked else "restore"
     bridge = _bridge_component()
     bridge(
         data={

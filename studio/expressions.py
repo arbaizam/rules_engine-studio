@@ -65,7 +65,7 @@ def condition_expression(condition: Condition, *, include_status: bool = True) -
     if condition.error_on_null and condition.operator not in {"is_null", "is_not_null"}:
         expression += "; raise an error when an operand is null"
     if include_status and not condition.active_flag:
-        expression = f"Ignored because this condition is inactive: {expression}"
+        expression = f"Evaluates as false because this condition is inactive: {expression}"
     return expression
 
 
@@ -129,7 +129,7 @@ def _group_lines(group: ConditionGroup, depth: int) -> list[str]:
     """Return the recursive lines for one logical group."""
     prefix = "  " * depth
     if not group.children:
-        return [f"{prefix}Always matches because this group has no conditions."]
+        return [f"{prefix}Invalid empty group: add a condition or nested group."]
 
     requirement = (
         "All of the following must be true:"
@@ -188,8 +188,10 @@ def _literal_expression(operand: Operand) -> str:
     """Format a literal using the declared type that the compiler will apply."""
     value = operand.value
     type_hint = operand.value_type or ""
-    if type_hint in {"decimal", "double", "integer"}:
-        return str(value) if value is not None and value != "" else "[enter a number]"
+    if value is None:
+        return f"null ({type_hint})" if type_hint and type_hint != "null" else "null"
+    if type_hint in {"decimal", "number", "float", "double", "integer", "int", "long"}:
+        return str(value) if value != "" else "[enter a number]"
     if type_hint in {"date", "timestamp", "timestamp_ntz"}:
         if value is None or value == "":
             return f"[enter a {type_hint.replace('_', ' ')}]"

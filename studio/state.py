@@ -11,7 +11,6 @@ get a widget-key collision.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from decimal import Decimal
 from typing import Any
 
 import pandas as pd
@@ -20,13 +19,16 @@ import streamlit as st
 from rules_engine import FunctionRegistry
 
 from . import custom_functions, sample_data, type_compatibility
-from .schema import TOLERANCE_OPERATORS, Ruleset, new_rule
+from .schema import Ruleset, new_rule
 
 DRAFT = "draft_ruleset"
 SAMPLE = "sample_frame"
 SELECTED = "selected_rule_uid"
 ACTIONS = "pending_actions"
 PREFIX = "column_prefix"
+EDITOR_ERRORS = "studio_editor_errors"
+EDITOR_KEYS_BY_RULE = "studio_editor_keys_by_rule"
+EDITOR_RAW = "studio_editor_raw"
 
 
 def init() -> None:
@@ -55,9 +57,16 @@ def draft() -> Ruleset:
 
 def set_draft(ruleset: Ruleset) -> None:
     """Replace the current draft and select its first rule."""
-    normalize_ruleset(ruleset)
     st.session_state[DRAFT] = ruleset
     st.session_state[SELECTED] = ruleset.rules[0].uid if ruleset.rules else None
+    st.session_state.pop(EDITOR_ERRORS, None)
+    st.session_state.pop(EDITOR_KEYS_BY_RULE, None)
+    st.session_state.pop(EDITOR_RAW, None)
+
+
+def editor_errors() -> dict[str, str]:
+    """Return pending edits that could not be parsed into the current draft."""
+    return dict(st.session_state.get(EDITOR_ERRORS, {}))
 
 
 def frame() -> pd.DataFrame:
@@ -102,20 +111,6 @@ def select_rule(uid: str | None) -> None:
 def functions() -> FunctionRegistry:
     """Return the authoritative function registry used by the studio."""
     return custom_functions.registry()
-
-
-def normalize_ruleset(ruleset: Ruleset) -> None:
-    """Repair legacy widget state that cannot be represented by active controls."""
-    ordered = ruleset.ordered_rules()
-    if len({rule.rule_order for rule in ordered}) != len(ordered):
-        for index, rule in enumerate(ordered, start=1):
-            rule.rule_order = index * 10
-    for rule in ruleset.rules:
-        for condition in rule.conditions.walk_conditions():
-            if condition.operator not in TOLERANCE_OPERATORS:
-                condition.tolerance_abs = Decimal(0)
-            if condition.operator in {"is_null", "is_not_null"}:
-                condition.error_on_null = False
 
 
 # --------------------------------------------------------------------------
@@ -172,6 +167,12 @@ def duplicate_rule(uid: str) -> None:
 def delete_rule(uid: str) -> None:
     """Delete one rule and select the first remaining rule."""
     ruleset = draft()
+    error_keys = st.session_state.get(EDITOR_KEYS_BY_RULE, {}).pop(uid, [])
+    errors = st.session_state.get(EDITOR_ERRORS, {})
+    raw_values = st.session_state.get(EDITOR_RAW, {})
+    for key in error_keys:
+        errors.pop(key, None)
+        raw_values.pop(key, None)
     ruleset.rules = [r for r in ruleset.rules if r.uid != uid]
     select_rule(ruleset.rules[0].uid if ruleset.rules else None)
 

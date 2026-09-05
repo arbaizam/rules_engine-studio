@@ -50,7 +50,7 @@ def test_app_renders_function_contracts_and_lazy_upload_views():
     function = next(selectbox for selectbox in app.selectbox if selectbox.value == "coalesce")
     assert len(function.options) < 58
     assert "decimal_safe_divide" in function.options
-    assert "upper" not in function.options
+    assert "upper" in function.options
     assert not app.get("file_uploader")
     assert not app.radio
 
@@ -336,8 +336,8 @@ def test_expression_previews_render_and_follow_condition_edits():
     )
 
 
-def test_condition_fields_follow_operator_and_sample_value_types():
-    """String comparisons must not offer date or numeric input fields."""
+def test_condition_fields_allow_canonical_string_rendering_of_all_value_types():
+    """Canonical text comparisons may use date and numeric fields as text."""
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py", default_timeout=15).run()
     select_rule(app, 40)
     rule = next(rule for rule in app.session_state[state.DRAFT].rules if rule.rule_order == 40)
@@ -360,5 +360,5 @@ def test_condition_fields_follow_operator_and_sample_value_types():
         selectbox for selectbox in app.selectbox if selectbox.key == f"cr-{condition.uid}-field"
     )
     assert any(option.startswith("LoanNo ·") for option in right_field.options)
-    assert not any(option.startswith("EffectiveDate ·") for option in right_field.options)
-    assert not any(option.startswith("OriginalFICO ·") for option in right_field.options)
+    assert any(option.startswith("EffectiveDate ·") for option in right_field.options)
+    assert any(option.startswith("OriginalFICO ·") for option in right_field.options)

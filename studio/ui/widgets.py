@@ -10,17 +10,24 @@ contracts aligned with the production registry.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
-from decimal import InvalidOperation
+from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
 from html import escape
 from typing import Any
 
 import streamlit as st
 
+from rules_engine.canonical_values import canonical_json_dumps, decode_json_types
+
 from .. import custom_functions, type_compatibility
 from ..schema import (
     OPERAND_KINDS,
+    SCALAR_LITERAL_TYPES,
     Operand,
+    _argument_from_payload,
+    _argument_to_payload,
     infer_literal_type,
     normalize_literal_editor_type,
 )
@@ -32,6 +39,40 @@ KIND_LABELS = {
     "custom_function": "Function",
 }
 KIND_ORDER = list(OPERAND_KINDS)
+
+
+@contextmanager
+def editor_pass(rule_uid: str):
+    """Clear stale parse blockers for controls removed from this rule's form."""
+    seen: set[str] = set()
+    st.session_state["studio_editor_seen"] = seen
+    try:
+        yield
+    finally:
+        known = st.session_state.setdefault("studio_editor_keys_by_rule", {})
+        errors = st.session_state.setdefault("studio_editor_errors", {})
+        raw_values = st.session_state.setdefault("studio_editor_raw", {})
+        for key in set(known.get(rule_uid, ())) - seen:
+            errors.pop(key, None)
+            raw_values.pop(key, None)
+        known[rule_uid] = sorted(seen)
+        st.session_state.pop("studio_editor_seen", None)
+
+
+def editor_error(key: str, message: str | None, *, raw: str | None = None) -> None:
+    """Register parse failures so evaluation and export cannot use stale values."""
+    seen = st.session_state.get("studio_editor_seen")
+    if seen is not None:
+        seen.add(key)
+    errors = st.session_state.setdefault("studio_editor_errors", {})
+    if message is None:
+        errors.pop(key, None)
+        st.session_state.setdefault("studio_editor_raw", {}).pop(key, None)
+    else:
+        errors[key] = message
+        if raw is not None:
+            st.session_state.setdefault("studio_editor_raw", {})[key] = raw
+        st.error(message)
 
 
 def index_of(options: Sequence[Any], value: Any, default: int = 0) -> int:
@@ -139,37 +180,14 @@ def operand_editor(
             allowed_types=allowed_types,
         )
     else:
-        operand.value_type = normalize_literal_editor_type(operand.value_type, operand.value)
-        literal_types = type_compatibility.literal_type_options(
-            allowed_types,
-            operand.value_type,
-        )
-        current_type = operand.value_type
-        operand.value_type = st.selectbox(
-            "Literal type",
-            literal_types,
-            index=index_of(literal_types, operand.value_type, 0),
-            key=f"{key}-vtype",
-            label_visibility="collapsed",
-            format_func=lambda value: _type_option_label(
-                value,
-                current_type,
-                allowed_types,
-            ),
-        )
-        operand.value = literal_input(operand, f"{key}-value")
+        _literal_editor(operand, key, allowed_types=allowed_types)
 
-    if operand.kind != "literal":
-        profile = type_compatibility.profile_for_operand(
-            operand,
-            field_profiles,
-            prior_profiles,
-        )
-        _default_if_null_editor(
-            operand,
-            key,
-            allowed_types=_fallback_types(profile, allowed_types),
-        )
+    profile = type_compatibility.profile_for_operand(operand, field_profiles, prior_profiles)
+    _default_if_null_editor(
+        operand,
+        key,
+        allowed_types=_fallback_types(profile, allowed_types),
+    )
     return operand
 
 
@@ -272,6 +290,7 @@ def _function_editor(
     if not options:
         st.error("No active functions are registered for this context.")
         return
+    previous_function = operand.function
     operand.function = st.selectbox(
         "Function",
         options,
@@ -279,7 +298,11 @@ def _function_editor(
         key=f"{key}-function",
         label_visibility="collapsed",
     )
-    specification = custom_functions.spec(operand.function)
+    try:
+        specification = custom_functions.spec(operand.function)
+    except StopIteration:
+        st.error(f"Function `{operand.function}` is not registered. Select a registered function.")
+        return
     return_mode, _, return_argument = str(
         specification.get("return_type_hint") or ""
     ).partition(":")
@@ -288,7 +311,13 @@ def _function_editor(
         f"Returns `{specification['return_type_hint'] or 'any'}`."
     )
     allowed_names = {argument["name"] for argument in specification["arguments"]}
-    operand.args = {name: value for name, value in operand.args.items() if name in allowed_names}
+    if operand.function != previous_function:
+        operand.args = {name: value for name, value in operand.args.items() if name in allowed_names}
+    elif unknown_arguments := set(operand.args) - allowed_names:
+        st.error("Unrecognized arguments: " + ", ".join(sorted(unknown_arguments)))
+        if st.button("Remove unrecognized arguments", key=f"{key}-remove-unknown-args"):
+            operand.args = {name: value for name, value in operand.args.items() if name in allowed_names}
+            st.rerun()
     for argument in specification["arguments"]:
         argument_name = str(argument["name"])
         argument_type_hint = str(argument["type_hint"])
@@ -323,12 +352,16 @@ def _function_editor(
             )
             continue
         current = operand.args.get(argument_name)
-        if argument_type_hint in {
-            "sequence",
-            "string_sequence",
-            "integer_sequence",
-            "date_sequence",
-        }:
+        if isinstance(current, Mapping) or (
+            isinstance(current, (list, tuple, set))
+            and argument_type_hint not in type_compatibility.SEQUENCE_HINTS
+        ):
+            operand.args[argument_name] = _collection_argument_input(current, f"{key}-arg-{argument_name}")
+            continue
+        if argument_type_hint in type_compatibility.SEQUENCE_HINTS:
+            if argument_type_hint == "ordered_sequence" and isinstance(current, set):
+                st.error(f"`{argument_name}` requires an ordered list or tuple, not a set.")
+                continue
             mode = st.selectbox(
                 f"{argument_name} source",
                 ("Operand", "Authored sequence"),
@@ -337,6 +370,7 @@ def _function_editor(
             )
             if mode == "Authored sequence":
                 values = list(current) if isinstance(current, (list, tuple, set)) else []
+                operand.args[argument_name] = values
                 _sequence_operand_editor(
                     values,
                     f"{key}-arg-{argument_name}",
@@ -350,12 +384,15 @@ def _function_editor(
                         derived_types if return_mode == "common_type" else None
                     ),
                 )
-                operand.args[argument_name] = values
+                if isinstance(current, (tuple, set)) and values == list(current):
+                    operand.args[argument_name] = current
                 continue
+        raw_argument = not isinstance(current, Operand)
+        had_argument = argument_name in operand.args
         if not isinstance(current, Operand):
             default_value = (
                 current
-                if current is not None
+                if had_argument
                 else argument.get("default")
                 if not argument["required"]
                 else _default_for_hint(argument_type_hint)
@@ -363,9 +400,9 @@ def _function_editor(
             current = Operand(
                 kind="literal",
                 value=default_value,
-                value_type=_literal_type_for_hint(argument_type_hint, default_value),
+                value_type=None if had_argument else _literal_type_for_hint(argument_type_hint, default_value),
             )
-            operand.args[argument_name] = current
+        previous_payload = current.to_dict()
         st.markdown(f"`{argument_name}` · {argument_type_hint}")
         operand_editor(
             current,
@@ -383,6 +420,8 @@ def _function_editor(
                 else type_compatibility.allowed_types_for_hint(argument_type_hint)
             ),
         )
+        if not raw_argument or not had_argument or current.to_dict() != previous_payload:
+            operand.args[argument_name] = current
 
 
 def _sequence_operand_editor(
@@ -404,17 +443,23 @@ def _sequence_operand_editor(
         "date_sequence": "date",
     }.get(item_type_hint, "any")
     for index, value in enumerate(list(values)):
-        if not isinstance(value, Operand):
+        if isinstance(value, (Mapping, list, tuple, set)):
+            with st.container(border=True):
+                values[index] = _collection_argument_input(value, f"{key}-collection-{index}")
+                _sequence_item_buttons(values, index, key)
+            continue
+        raw_item = not isinstance(value, Operand)
+        if raw_item:
             value = Operand(
                 kind="literal",
                 value=value,
-                value_type=_literal_type_for_hint(item_hint, value),
+                value_type=None,
             )
-            values[index] = value
+        previous_payload = value.to_dict()
         with st.container(border=True):
             operand_editor(
                 value,
-                f"{key}-item-{index}",
+                f"{key}-raw-{index}" if raw_item else f"{key}-item-{value.uid}",
                 columns,
                 label=f"Item {index + 1}",
                 compact=True,
@@ -428,9 +473,9 @@ def _sequence_operand_editor(
                     else type_compatibility.allowed_types_for_hint(item_hint)
                 ),
             )
-            if st.button("Remove item", key=f"{key}-remove-{index}"):
-                values.pop(index)
-                st.rerun()
+            if not raw_item or value.to_dict() != previous_payload:
+                values[index] = value
+            _sequence_item_buttons(values, index, key)
     if st.button("Add item", key=f"{key}-add"):
         default = _default_for_hint(item_hint)
         values.append(
@@ -443,6 +488,30 @@ def _sequence_operand_editor(
         st.rerun()
 
 
+def _sequence_item_buttons(values: list[Any], index: int, key: str) -> None:
+    """Edit list structure before requesting a Streamlit rerun."""
+    if st.button("Remove item", key=f"{key}-remove-{index}"):
+        values.pop(index)
+        st.rerun()
+    move = st.columns(2)
+    if move[0].button("Move up", key=f"{key}-up-{index}", disabled=index == 0):
+        values[index - 1], values[index] = values[index], values[index - 1]
+        st.rerun()
+    if move[1].button(
+        "Move down", key=f"{key}-down-{index}", disabled=index == len(values) - 1
+    ):
+        values[index + 1], values[index] = values[index], values[index + 1]
+        st.rerun()
+
+
+def _collection_argument_input(current: Any, key: str) -> Any:
+    """Edit recursive function arguments using canonical operand mappings."""
+    payload = _argument_to_payload(current)
+    expected = dict if isinstance(current, Mapping) else list
+    edited = _json_literal_input(payload, expected, f"{key}-collection", "Function argument JSON")
+    return current if edited == payload else _argument_from_payload(edited)
+
+
 def _literal_argument_input(argument: Mapping[str, Any], current: Any, key: str) -> Any:
     """Render a literal-only argument from its registry contract."""
     argument_name = str(argument["name"])
@@ -450,45 +519,38 @@ def _literal_argument_input(argument: Mapping[str, Any], current: Any, key: str)
     label = f"{argument_name} · {argument_type_hint}"
     if argument.get("allowed_values") is not None:
         values = list(argument["allowed_values"])
+        if current not in values:
+            values.append(current)
         return st.selectbox(
             label,
             values,
             index=index_of(values, current),
             key=key,
         )
-    if argument_type_hint == "boolean":
-        return st.checkbox(label, value=bool(current), key=key)
-    if argument_type_hint == "integer":
-        return int(st.number_input(label, value=int(current or 0), step=1, key=key))
-    if argument_type_hint in {
-        "sequence",
-        "string_sequence",
-        "integer_sequence",
-        "date_sequence",
-    }:
-        values = list(current) if isinstance(current, (list, tuple, set)) else []
-        text = ", ".join(str(value) for value in values)
-        authored = st.text_input(label, value=text, key=key)
-        parsed = [part.strip() for part in authored.split(",") if part.strip()]
-        if argument_type_hint == "integer_sequence":
-            try:
-                return tuple(int(value) for value in parsed)
-            except ValueError:
-                st.error(f"`{argument_name}` requires integers.")
-                return tuple(values)
-        return tuple(parsed)
-    return st.text_input(label, value="" if current is None else str(current), key=key)
+    st.markdown(label)
+    literal = current if isinstance(current, Operand) else Operand(
+        kind="literal", value=current,
+        value_type=_literal_type_for_hint(argument_type_hint, current),
+    )
+    if literal.kind != "literal":
+        st.error(f"`{argument_name}` requires a literal value.")
+        return current
+    edited = literal_input(literal, key)
+    if isinstance(current, Operand):
+        literal.value = edited
+        return literal
+    return edited
 
 
 def _default_for_hint(type_hint: str) -> Any:
     """Return a neutral editable literal for one registry argument type hint."""
-    if type_hint in {"integer", "number"}:
+    if type_hint in {"integer", "number", "decimal", "double"}:
         return 0
     if type_hint == "boolean":
         return False
-    if type_hint in {"sequence", "string_sequence", "integer_sequence", "date_sequence"}:
+    if type_hint in type_compatibility.SEQUENCE_HINTS | {"array"}:
         return []
-    if type_hint == "mapping":
+    if type_hint in {"mapping", "struct"}:
         return {}
     return ""
 
@@ -502,6 +564,7 @@ def _literal_type_for_hint(type_hint: str, value: Any) -> str:
         "number": "decimal",
         "timestamp": "timestamp",
         "sequence": "array",
+        "ordered_sequence": "array",
         "string_sequence": "array",
         "integer_sequence": "array",
         "date_sequence": "array",
@@ -528,28 +591,65 @@ def _default_if_null_editor(
         operand.default_if_null = None
         return
     if operand.default_if_null is None:
-        operand.default_if_null = Operand(kind="literal", value="", value_type="string")
+        options = [
+            kind for kind in type_compatibility.literal_type_options(allowed_types)
+            if kind != "null"
+        ]
+        default_type = options[0] if options else "string"
+        operand.default_if_null = Operand(
+            kind="literal", value=_default_for_hint(default_type), value_type=default_type
+        )
     fallback = operand.default_if_null
-    fallback.value_type = normalize_literal_editor_type(fallback.value_type, fallback.value)
-    fallback_types = type_compatibility.literal_type_options(
-        allowed_types,
-        fallback.value_type,
+    _literal_editor(
+        fallback, f"{key}-default", allowed_types=allowed_types, fallback=True,
     )
-    fallback_types = [kind for kind in fallback_types if kind != "null"]
-    current_type = fallback.value_type
-    fallback.value_type = st.selectbox(
-        "Default type",
-        fallback_types,
-        index=index_of(fallback_types, fallback.value_type),
-        key=f"{key}-default-type",
+
+
+def _literal_editor(
+    operand: Operand,
+    key: str,
+    *,
+    allowed_types: frozenset[str] | None,
+    fallback: bool = False,
+) -> None:
+    """Edit value shape separately from optional canonical scalar type metadata."""
+    inferred = infer_literal_type(operand.value)
+    current_type = (
+        inferred if inferred in {"array", "struct"}
+        else normalize_literal_editor_type(operand.value_type, operand.value)
+    )
+    literal_types = type_compatibility.literal_type_options(allowed_types, current_type)
+    if fallback:
+        literal_types = [kind for kind in literal_types if kind != "null" or kind == current_type]
+    selected_type = st.selectbox(
+        "Default type" if fallback else "Literal type",
+        literal_types,
+        index=index_of(literal_types, current_type),
+        key=f"{key}-type" if fallback else f"{key}-vtype",
         label_visibility="collapsed",
-        format_func=lambda value: _type_option_label(
-            value,
-            current_type,
-            allowed_types,
-        ),
+        format_func=lambda value: _type_option_label(value, current_type, allowed_types),
     )
-    fallback.value = literal_input(fallback, f"{key}-default-value")
+    if selected_type != current_type:
+        operand.value_type = selected_type
+        if selected_type in {"array", "struct"}:
+            operand.value = [] if selected_type == "array" else {}
+    if selected_type in {"array", "struct"}:
+        hint = operand.value_type if operand.value_type not in {"array", "struct", "list"} else None
+        hints = list(dict.fromkeys([None, *SCALAR_LITERAL_TYPES, *([hint] if hint else [])]))
+        selected_hint = st.selectbox(
+            "Element type",
+            hints,
+            index=index_of(hints, hint),
+            key=f"{key}-element-type",
+            format_func=lambda value: "Infer each value" if value is None else value,
+            help="A declared type applies to every scalar inside this collection.",
+        )
+        if selected_hint != hint:
+            operand.value_type = selected_hint
+    editor_operand = Operand(kind="literal", value=operand.value, value_type=selected_type)
+    operand.value = literal_input(editor_operand, f"{key}-value")
+    if fallback and operand.value is None:
+        st.error("A null fallback must contain a non-null literal.")
 
 
 def literal_input(operand: Operand, key: str) -> Any:
@@ -564,38 +664,16 @@ def literal_input(operand: Operand, key: str) -> Any:
             if isinstance(operand.value, bool)
             else str(operand.value).lower() == "true"
         )
-        return st.checkbox("True", value=current, key=key)
+        selected = st.checkbox("True", value=current, key=key)
+        return operand.value if selected == current else selected
     if kind == "integer":
-        current = _to_number(operand.value, 0)
-        return int(
-            st.number_input(
-                "Value",
-                value=int(current),
-                step=1,
-                key=key,
-                label_visibility="collapsed",
-            )
-        )
+        return _numeric_literal_input(operand.value, key, "integer")
     if kind == "double":
-        current = _to_number(operand.value, 0.0)
-        return float(
-            st.number_input(
-                "Value",
-                value=float(current),
-                key=key,
-                label_visibility="collapsed",
-            )
-        )
+        return _numeric_literal_input(operand.value, key, "double")
     if kind == "decimal":
-        return st.text_input(
-            "Decimal",
-            value="" if operand.value is None else str(operand.value),
-            key=key,
-            placeholder="0.00",
-            label_visibility="collapsed",
-        )
+        return _numeric_literal_input(operand.value, key, "decimal")
     if kind in {"array", "list"}:
-        current = list(operand.value) if isinstance(operand.value, (list, tuple, set)) else []
+        current = operand.value if isinstance(operand.value, (list, tuple, set)) else []
         return _json_literal_input(current, list, f"{key}-array", "JSON array")
     if kind == "struct":
         current = dict(operand.value) if isinstance(operand.value, dict) else {}
@@ -605,47 +683,87 @@ def literal_input(operand: Operand, key: str) -> Any:
         "timestamp": "2026-08-23T12:00:00+00:00",
         "timestamp_ntz": "2026-08-23T12:00:00",
     }.get(kind, "value")
-    return st.text_input(
+    current = "" if operand.value is None else str(operand.value)
+    selected = st.text_input(
         "Value",
-        value="" if operand.value is None else str(operand.value),
+        value=current,
         key=key,
         placeholder=placeholder,
         label_visibility="collapsed",
     )
+    return operand.value if selected == current else selected
+
+
+def _numeric_literal_input(value: Any, key: str, kind: str) -> Any:
+    """Use text to preserve full signed-long and decimal precision in the browser."""
+    current = "" if value is None else str(value)
+    raw = st.text_input(
+        kind.title(), value=current, key=key, label_visibility="collapsed",
+        placeholder="0.00" if kind == "decimal" else "0",
+    )
+    if raw == current:
+        editor_error(key, None)
+        return value
+    try:
+        if kind == "integer":
+            parsed = int(raw)
+        else:
+            parsed = Decimal(raw) if kind == "decimal" else float(raw)
+        if kind != "integer" and not (
+            parsed.is_finite() if isinstance(parsed, Decimal) else math.isfinite(parsed)
+        ):
+            raise ValueError("Numeric literals must be finite.")
+        editor_error(key, None)
+        return parsed
+    except (ValueError, InvalidOperation):
+        editor_error(key, f"Enter a finite {kind} value.")
+        # Preserve invalid edits so production validation cannot approve an older value.
+        return raw
 
 
 def _json_literal_input(
-    current: list[Any] | dict[str, Any],
+    current: list[Any] | tuple[Any, ...] | set[Any] | dict[str, Any],
     expected_type: type[list[Any]] | type[dict[str, Any]],
     key: str,
     label: str,
-) -> list[Any] | dict[str, Any]:
+) -> Any:
     """Render and validate one canonical array or struct literal as JSON."""
+    initial_error = None
+    try:
+        initial = canonical_json_dumps(current)
+    except (ValueError, TypeError) as exc:
+        initial = json.dumps(current, default=str)
+        initial_error = f"Invalid {label}: {exc}."
     raw = st.text_area(
         label,
-        value=json.dumps(current, indent=2, default=str),
+        value=st.session_state.get("studio_editor_raw", {}).get(key, initial),
         key=key,
         height=112,
         placeholder="[]" if expected_type is list else "{}",
         label_visibility="collapsed",
     )
+    if raw == initial:
+        editor_error(key, initial_error, raw=raw if initial_error else None)
+        return current
     try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        st.error(f"Invalid {label}: {exc.msg} at line {exc.lineno}, column {exc.colno}.")
+        parsed = decode_json_types(json.loads(raw, parse_float=Decimal, parse_constant=_invalid_json_number))
+    except (ValueError, InvalidOperation) as exc:
+        editor_error(key, f"Invalid {label}: {exc}.", raw=raw)
         return current
-    if not isinstance(parsed, expected_type):
-        st.error(f"{label} must start with {'[' if expected_type is list else '{'}.")
+    accepted_types = (list, tuple, set) if expected_type is list else (dict,)
+    if not isinstance(parsed, accepted_types):
+        editor_error(
+            key, f"{label} must contain {'an array' if expected_type is list else 'an object'}.",
+            raw=raw,
+        )
         return current
+    editor_error(key, None)
     return parsed
 
 
-def _to_number(value: Any, fallback: float) -> float:
-    """Return a finite widget number or a safe fallback."""
-    try:
-        return float(value)
-    except (TypeError, ValueError, InvalidOperation):
-        return fallback
+def _invalid_json_number(value: str) -> Any:
+    """Reject JavaScript non-finite constants that canonical literals forbid."""
+    raise ValueError(f"Non-finite number {value} is not allowed")
 
 
 def issue_list(issues: Sequence[Any], title: str = "Checks") -> None:
